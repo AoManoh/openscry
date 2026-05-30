@@ -1,0 +1,16 @@
+# Build artifacts
+/openscry
+/bin/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Local environment / secrets
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

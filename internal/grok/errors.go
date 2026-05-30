@@ -1,0 +1,53 @@
+package grok
+
+import "fmt"
+
+// Code classifies an upstream failure so callers (and ultimately the AI
+// client) can see exactly why a search did not succeed. Per the openscry
+// design principle, failures are always surfaced explicitly and are never
+// masked by silently switching to a different model.
+type Code string
+
+const (
+	// CodeModelUnavailable indicates the requested model/request was
+	// rejected (e.g. HTTP 400/404). It is NOT retryable and MUST NOT
+	// trigger an automatic switch to another model.
+	CodeModelUnavailable Code = "model_unavailable"
+	// CodeUpstreamStatus is a non-success HTTP status not otherwise
+	// classified (auth, 5xx, unexpected).
+	CodeUpstreamStatus Code = "upstream_status"
+	// CodeTimeout indicates the request exceeded its deadline.
+	CodeTimeout Code = "timeout"
+	// CodeConnect indicates a connection-level failure.
+	CodeConnect Code = "connect"
+	// CodeCanceled indicates the caller/client cancelled the request.
+	CodeCanceled Code = "canceled"
+	// CodeRateLimit indicates upstream throttling (HTTP 429).
+	CodeRateLimit Code = "rate_limit"
+	// CodeEmpty indicates a successful transport but empty content — a
+	// failure class that must remain visible, not silently treated as OK.
+	CodeEmpty Code = "empty"
+	// CodeDecode indicates a request/response (de)serialization failure.
+	CodeDecode Code = "decode"
+)
+
+// Error is the structured error returned by the grok client.
+type Error struct {
+	Code      Code
+	Message   string
+	Status    int  // HTTP status when applicable; 0 otherwise
+	Retryable bool // hint for the future resilience layer (stage S2)
+}
+
+func (e *Error) Error() string {
+	if e.Status != 0 {
+		return fmt.Sprintf("grok[%s] (HTTP %d): %s", e.Code, e.Status, e.Message)
+	}
+	return fmt.Sprintf("grok[%s]: %s", e.Code, e.Message)
+}
+
+// AsError extracts a *Error from err, if present.
+func AsError(err error) (*Error, bool) {
+	ge, ok := err.(*Error)
+	return ge, ok
+}
