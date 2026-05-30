@@ -24,6 +24,7 @@ import (
 type Service struct {
 	client       *grok.Client
 	defaultModel string
+	provider     string // resolved provider mode: "chat" (default) or "responses"
 	profiles     resilience.Profiles
 	breaker      *resilience.Breaker
 	retryOpts    resilience.RetryOptions
@@ -38,6 +39,7 @@ type Options struct {
 	RetryBaseDelay          time.Duration // first backoff delay (default 500ms)
 	RetryBudgetBurst        int           // shared retry-budget burst (default 8)
 	RetryBudgetRefillPerSec float64       // budget refill rate (default 2/s)
+	Provider                string        // resolved provider mode ("chat"|"responses"); empty = chat
 }
 
 // New constructs a Service with default resilience settings.
@@ -64,9 +66,14 @@ func NewWithOptions(client *grok.Client, defaultModel string, opt Options) *Serv
 	if baseDelay <= 0 {
 		baseDelay = 500 * time.Millisecond
 	}
+	provider := strings.TrimSpace(opt.Provider)
+	if provider == "" {
+		provider = "chat"
+	}
 	return &Service{
 		client:       client,
 		defaultModel: defaultModel,
+		provider:     provider,
 		profiles:     opt.Profiles.Normalize(),
 		breaker:      resilience.NewBreaker(opt.Breaker),
 		retryOpts: resilience.RetryOptions{
@@ -104,6 +111,12 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	if query == "" {
 		return nil, fmt.Errorf("search: query must not be empty")
 	}
+	// Provider seam (fail-loud): the responses path is not implemented yet.
+	// It must not silently fall back to chat; the operator gets an explicit
+	// error until annotation-passthrough quality is verified (decision 二c).
+	if s.provider == "responses" {
+		return nil, fmt.Errorf("search: GROK_SEARCH_PROVIDER=responses is not implemented yet — use chat (default) or unset it; the responses path needs annotation-passthrough verification first")
+	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = s.defaultModel
@@ -117,7 +130,7 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 		var out string
 		gerr := s.breaker.Guard(func() error {
 			var e error
-			out, e = s.client.ChatSearch(c, model, prompt.SearchPrompt, userContent)
+			out, e = s.client.Complete(c, model, prompt.SearchPrompt, userContent)
 			return e
 		}, isBreakerFailure)
 		return out, gerr

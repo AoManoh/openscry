@@ -148,3 +148,15 @@ func TestSearchEmptyQueryRejected(t *testing.T) {
 		t.Fatalf("expected empty-query error, got %v", err)
 	}
 }
+
+func TestSearchResponsesProviderFailsLoud(t *testing.T) {
+	// The responses provider is a seam, not yet implemented. It must fail
+	// loud rather than silently falling back to chat. No HTTP server is
+	// needed: the seam short-circuits before any client call.
+	svc := NewWithOptions(grok.NewClient("http://unused.invalid", "k", time.Second), "m",
+		Options{Provider: "responses", MaxAttempts: 1})
+	_, err := svc.Search(context.Background(), Request{Query: "hi"})
+	if err == nil || !strings.Contains(err.Error(), "responses") {
+		t.Fatalf("expected fail-loud responses error, got %v", err)
+	}
+}

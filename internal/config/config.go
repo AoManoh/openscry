@@ -7,6 +7,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -36,6 +37,16 @@ const (
 	DefaultQueueSize   = 64
 	maxConcurrency     = 100
 	maxQueueSize       = 10000
+
+	// DefaultSearchProvider selects the search provider mode. "auto" resolves
+	// to "responses" only for the official api.x.ai host, otherwise "chat"
+	// (the proven path for grok2api). See ResolveSearchProvider.
+	DefaultSearchProvider = "auto"
+
+	// Default extractor endpoints for the optional web_fetch fallback chain.
+	// They are only used when the corresponding API key is configured.
+	DefaultTavilyURL    = "https://api.tavily.com"
+	DefaultFirecrawlURL = "https://api.firecrawl.dev"
 )
 
 // Config holds the resolved runtime configuration.
@@ -47,18 +58,34 @@ type Config struct {
 	Concurrency    int           // GROK_CONCURRENCY — MCP worker pool size (default 8, clamp [1,100])
 	QueueSize      int           // GROK_QUEUE_SIZE — MCP request queue size (default 64, clamp [1,10000])
 	Debug          bool          // GROK_DEBUG
+
+	// SearchProvider is the raw mode (auto|chat|responses); resolve the
+	// effective mode for a given base URL via ResolveSearchProvider.
+	SearchProvider string // GROK_SEARCH_PROVIDER (default auto)
+
+	// Optional web_fetch extractor providers. A provider is only attempted
+	// when its API key is non-empty; otherwise that fallback tier is skipped.
+	TavilyAPIKey    string // TAVILY_API_KEY
+	TavilyAPIURL    string // TAVILY_API_URL (default DefaultTavilyURL)
+	FirecrawlAPIKey string // FIRECRAWL_API_KEY
+	FirecrawlAPIURL string // FIRECRAWL_API_URL (default DefaultFirecrawlURL)
 }
 
 // Load reads configuration from the environment and validates it.
 func Load() (*Config, error) {
 	cfg := &Config{
-		APIBaseURL:     strings.TrimSpace(os.Getenv("GROK_API_URL")),
-		APIKey:         strings.TrimSpace(os.Getenv("GROK_API_KEY")),
-		Model:          firstNonEmpty(strings.TrimSpace(os.Getenv("GROK_MODEL")), DefaultModel),
-		RequestTimeout: DefaultRequestTimeout,
-		Concurrency:    DefaultConcurrency,
-		QueueSize:      DefaultQueueSize,
-		Debug:          parseBoolEnv("GROK_DEBUG"),
+		APIBaseURL:      strings.TrimSpace(os.Getenv("GROK_API_URL")),
+		APIKey:          strings.TrimSpace(os.Getenv("GROK_API_KEY")),
+		Model:           firstNonEmpty(strings.TrimSpace(os.Getenv("GROK_MODEL")), DefaultModel),
+		RequestTimeout:  DefaultRequestTimeout,
+		Concurrency:     DefaultConcurrency,
+		QueueSize:       DefaultQueueSize,
+		Debug:           parseBoolEnv("GROK_DEBUG"),
+		SearchProvider:  DefaultSearchProvider,
+		TavilyAPIKey:    strings.TrimSpace(os.Getenv("TAVILY_API_KEY")),
+		TavilyAPIURL:    firstNonEmpty(strings.TrimSpace(os.Getenv("TAVILY_API_URL")), DefaultTavilyURL),
+		FirecrawlAPIKey: strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")),
+		FirecrawlAPIURL: firstNonEmpty(strings.TrimSpace(os.Getenv("FIRECRAWL_API_URL")), DefaultFirecrawlURL),
 	}
 
 	if raw := strings.TrimSpace(os.Getenv("GROK_REQUEST_TIMEOUT")); raw != "" {
@@ -84,6 +111,15 @@ func Load() (*Config, error) {
 		cfg.QueueSize = clampInt(n, 1, maxQueueSize)
 	}
 
+	if raw := strings.ToLower(strings.TrimSpace(os.Getenv("GROK_SEARCH_PROVIDER"))); raw != "" {
+		switch raw {
+		case "auto", "chat", "responses":
+			cfg.SearchProvider = raw
+		default:
+			return nil, fmt.Errorf("invalid GROK_SEARCH_PROVIDER %q (want auto|chat|responses)", raw)
+		}
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -99,6 +135,25 @@ func (c *Config) Validate() error {
 		return errors.New("GROK_API_KEY is required")
 	}
 	return nil
+}
+
+// ResolveSearchProvider resolves the effective provider mode for a base URL.
+// An explicit "chat"/"responses" is returned unchanged; "auto" (or anything
+// else) maps to "responses" only for the official xAI host (api.x.ai),
+// otherwise "chat" — the proven path for a grok2api reverse proxy.
+func ResolveSearchProvider(mode, baseURL string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "chat" || mode == "responses" {
+		return mode
+	}
+	host := ""
+	if u, err := url.Parse(strings.TrimSpace(baseURL)); err == nil {
+		host = strings.ToLower(u.Hostname())
+	}
+	if host == "api.x.ai" || strings.HasSuffix(host, ".api.x.ai") {
+		return "responses"
+	}
+	return "chat"
 }
 
 // MaskAPIKey returns a redacted form of the API key for display/logging.

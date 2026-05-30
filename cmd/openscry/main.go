@@ -21,12 +21,13 @@ import (
 	"syscall"
 
 	"github.com/AoManoh/openscry/internal/config"
+	"github.com/AoManoh/openscry/internal/fetch"
 	"github.com/AoManoh/openscry/internal/grok"
 	"github.com/AoManoh/openscry/internal/mcpserver"
 	"github.com/AoManoh/openscry/internal/search"
 )
 
-const version = "0.1.0-s2"
+const version = "0.1.0-s3"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -37,6 +38,8 @@ func main() {
 	switch cmd := os.Args[1]; cmd {
 	case "search":
 		os.Exit(runSearch(os.Args[2:]))
+	case "fetch":
+		os.Exit(runFetch(os.Args[2:]))
 	case "mcp":
 		os.Exit(runMCP(os.Args[2:]))
 	case "version", "--version", "-v":
@@ -55,7 +58,8 @@ func usage() {
 
 usage:
   openscry search [--model M] [--platform P] [--timeout D] "your query"
-  openscry mcp        run the thin MCP adapter over stdio (one tool: web_search)
+  openscry fetch  [--timeout D] <url>
+  openscry mcp        run the thin MCP adapter over stdio (tools: web_search, web_fetch)
   openscry version    print version
 
 environment:
@@ -63,8 +67,11 @@ environment:
   GROK_API_KEY          required
   GROK_MODEL            optional, default `+config.DefaultModel+`
   GROK_REQUEST_TIMEOUT  optional, default 120s (accepts "120" seconds or "2m")
+  GROK_SEARCH_PROVIDER  optional, auto|chat|responses (default auto; resolves to chat for grok2api)
   GROK_CONCURRENCY      optional, MCP worker pool size (default 8)
   GROK_QUEUE_SIZE       optional, MCP request queue size (default 64)
+  TAVILY_API_KEY        optional, enables the Tavily extract tier in web_fetch
+  FIRECRAWL_API_KEY     optional, enables the Firecrawl scrape tier in web_fetch
 `)
 }
 
@@ -91,7 +98,8 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 	}
 
 	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
-	svc := search.New(client, cfg.Model)
+	provider := config.ResolveSearchProvider(cfg.SearchProvider, cfg.APIBaseURL)
+	svc := search.NewWithOptions(client, cfg.Model, search.Options{Provider: provider})
 
 	to := cfg.RequestTimeout
 	if *timeout > 0 {
@@ -125,13 +133,22 @@ func runMCP(args []string) int {
 	// JSON-RPC stream.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
-	svc := search.New(client, cfg.Model)
+	provider := config.ResolveSearchProvider(cfg.SearchProvider, cfg.APIBaseURL)
+	searchSvc := search.NewWithOptions(client, cfg.Model, search.Options{Provider: provider})
+	fetchSvc := fetch.New(client, fetch.Options{
+		Model:           cfg.Model,
+		TavilyAPIKey:    cfg.TavilyAPIKey,
+		TavilyAPIURL:    cfg.TavilyAPIURL,
+		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
+		FirecrawlAPIURL: cfg.FirecrawlAPIURL,
+	})
 
 	srv := mcpserver.NewWithConfig(os.Stdin, os.Stdout, logger, mcpserver.EngineConfig{
 		MaxConcurrentRequests: cfg.Concurrency,
 		RequestQueueSize:      cfg.QueueSize,
 	})
-	srv.Register(mcpserver.WebSearchTool(svc))
+	srv.Register(mcpserver.WebSearchTool(searchSvc))
+	srv.Register(mcpserver.WebFetchTool(fetchSvc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -145,10 +162,60 @@ func runMCP(args []string) int {
 
 	logger.Info("openscry.mcp_serving",
 		"model", cfg.Model, "base_url", cfg.APIBaseURL,
+		"provider", provider, "tools", "web_search,web_fetch",
+		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
 		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize)
 	if err := srv.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("openscry.serve_ended", "err", err.Error())
 		return 1
 	}
+	return 0
+}
+
+func runFetch(args []string) int {
+	fs := flag.NewFlagSet("fetch", flag.ContinueOnError)
+	timeout := fs.Duration("timeout", 0, "total fetch budget (e.g. 60s); 0 uses the configured fetch timeout")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	target := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if target == "" {
+		fmt.Fprintln(os.Stderr, `error: missing url
+usage: openscry fetch [--timeout D] <url>`)
+		return 2
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		return 1
+	}
+
+	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
+	fetchSvc := fetch.New(client, fetch.Options{
+		Model:           cfg.Model,
+		TavilyAPIKey:    cfg.TavilyAPIKey,
+		TavilyAPIURL:    cfg.TavilyAPIURL,
+		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
+		FirecrawlAPIURL: cfg.FirecrawlAPIURL,
+	})
+
+	ctx := context.Background()
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+	}
+
+	res, err := fetchSvc.Fetch(ctx, target)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fetch failed:", err)
+		return 1
+	}
+	// Degradation is visible: report the winning tier on stderr so stdout
+	// stays clean for piping the fetched content.
+	fmt.Fprintf(os.Stderr, "fetched via tier=%s\n", res.Tier)
+	fmt.Println(res.Content)
 	return 0
 }

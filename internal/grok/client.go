@@ -59,11 +59,12 @@ type streamChunk struct {
 	} `json:"error"`
 }
 
-// ChatSearch performs a streaming chat/completions call with the given
-// system prompt and user content, returning the accumulated assistant
-// content. Any failure is returned as a structured *Error; the model is
-// never silently changed.
-func (c *Client) ChatSearch(ctx context.Context, model, systemPrompt, userContent string) (string, error) {
+// Complete performs a streaming chat/completions call with the given system
+// prompt and user content, returning the accumulated assistant content. It
+// is the shared primitive behind both the search path (SearchPrompt) and the
+// Grok-assisted fetch path (FetchPrompt). Any failure is returned as a
+// structured *Error; the model is never silently changed.
+func (c *Client) Complete(ctx context.Context, model, systemPrompt, userContent string) (string, error) {
 	if _, ok := ctx.Deadline(); !ok && c.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
