@@ -33,7 +33,7 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 				},
 				"model": {
 					Type:        "string",
-					Description: "Optional model override for this call. Defaults to the configured model.",
+					Description: "Optional per-call model override. Defaults to the server's configured GROK_MODEL (user-supplied; there is no built-in default, and an unavailable model fails explicitly).",
 				},
 			},
 			Required:             []string{"query"},
@@ -72,7 +72,8 @@ func WebFetchTool(svc *fetch.Service) (Tool, ToolHandler) {
 		Description: "Fetch a URL and return its content as structured Markdown. Tries multiple " +
 			"extractors in order (Tavily, Firecrawl, Grok, then a basic HTTP fallback) under a " +
 			"single timeout budget; the first non-empty result wins and the tier used is reported. " +
-			"On total failure the tiers tried are listed.",
+			"On total failure the tiers tried are listed. When GROK_FETCH_FALLBACK=strict, the " +
+			"basic-HTTP fallback is disabled and a failed extractor/model fails loud.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{

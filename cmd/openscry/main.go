@@ -27,7 +27,7 @@ import (
 	"github.com/AoManoh/openscry/internal/search"
 )
 
-const version = "0.1.0-s3"
+const version = mcpserver.ServerVersion
 
 func main() {
 	if len(os.Args) < 2 {
@@ -65,9 +65,10 @@ usage:
 environment:
   GROK_API_URL          required, OpenAI-compatible base URL of grok2api (e.g. https://host/v1)
   GROK_API_KEY          required
-  GROK_MODEL            optional, default `+config.DefaultModel+`
+  GROK_MODEL            required, the model to use (user-supplied; never defaulted)
   GROK_REQUEST_TIMEOUT  optional, default 120s (accepts "120" seconds or "2m")
   GROK_SEARCH_PROVIDER  optional, auto|chat|responses (default auto; resolves to chat for grok2api)
+  GROK_FETCH_FALLBACK   optional, full|strict (default full; strict disables web_fetch's basic-HTTP fallback)
   GROK_CONCURRENCY      optional, MCP worker pool size (default 8)
   GROK_QUEUE_SIZE       optional, MCP request queue size (default 64)
   TAVILY_API_KEY        optional, enables the Tavily extract tier in web_fetch
@@ -77,7 +78,7 @@ environment:
 
 func runSearch(args []string) int {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
-	model := fs.String("model", "", "model override (default: $GROK_MODEL or built-in default)")
+	model := fs.String("model", "", "per-call model override (default: the configured $GROK_MODEL)")
 	platform := fs.String("platform", "", "platform focus (e.g. GitHub, Reddit)")
 	timeout := fs.Duration("timeout", 0, "request timeout override (e.g. 60s); 0 uses the config default")
 	if err := fs.Parse(args); err != nil {
@@ -137,6 +138,7 @@ func runMCP(args []string) int {
 	searchSvc := search.NewWithOptions(client, cfg.Model, search.Options{Provider: provider})
 	fetchSvc := fetch.New(client, fetch.Options{
 		Model:           cfg.Model,
+		Strict:          cfg.FetchFallback == "strict",
 		TavilyAPIKey:    cfg.TavilyAPIKey,
 		TavilyAPIURL:    cfg.TavilyAPIURL,
 		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
@@ -162,7 +164,8 @@ func runMCP(args []string) int {
 
 	logger.Info("openscry.mcp_serving",
 		"model", cfg.Model, "base_url", cfg.APIBaseURL,
-		"provider", provider, "tools", "web_search,web_fetch",
+		"provider", provider, "fetch_fallback", cfg.FetchFallback,
+		"tools", "web_search,web_fetch",
 		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
 		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize)
 	if err := srv.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -195,6 +198,7 @@ usage: openscry fetch [--timeout D] <url>`)
 	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
 	fetchSvc := fetch.New(client, fetch.Options{
 		Model:           cfg.Model,
+		Strict:          cfg.FetchFallback == "strict",
 		TavilyAPIKey:    cfg.TavilyAPIKey,
 		TavilyAPIURL:    cfg.TavilyAPIURL,
 		FirecrawlAPIKey: cfg.FirecrawlAPIKey,

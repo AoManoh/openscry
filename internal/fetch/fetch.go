@@ -10,6 +10,13 @@
 //  3. Grok fetch        (grok2api /chat/completions + FetchPrompt)
 //  4. basic HTTP        (GET + HTML-to-text), last resort
 //
+// Degradation policy (Strict): when Strict is false (the default, "full")
+// the chain runs to completion including the basic-HTTP last resort. When
+// Strict is true ("strict") the basic-HTTP last resort is disabled, so a
+// failed extractor/model fails loud with the tiers tried instead of
+// degrading to low-fidelity HTML stripping. The choice is operator-set via
+// GROK_FETCH_FALLBACK.
+//
 // A single OpFetch deadline bounds the whole chain: each tier shares the same
 // context, so a slow tier consumes the common budget and later tiers fail
 // fast rather than extending total latency.
@@ -34,6 +41,7 @@ type Service struct {
 	model    string
 	profiles resilience.Profiles
 	http     *http.Client
+	strict   bool // when true, disable the basic-HTTP last resort (fail loud)
 
 	tavilyKey    string
 	tavilyURL    string
@@ -47,6 +55,7 @@ type Service struct {
 type Options struct {
 	Model           string
 	Profiles        resilience.Profiles
+	Strict          bool // GROK_FETCH_FALLBACK=strict: disable basic-HTTP last resort
 	TavilyAPIKey    string
 	TavilyAPIURL    string
 	FirecrawlAPIKey string
@@ -60,6 +69,7 @@ func New(client *grok.Client, opt Options) *Service {
 		model:        strings.TrimSpace(opt.Model),
 		profiles:     opt.Profiles.Normalize(),
 		http:         &http.Client{},
+		strict:       opt.Strict,
 		tavilyKey:    strings.TrimSpace(opt.TavilyAPIKey),
 		tavilyURL:    strings.TrimRight(firstNonEmpty(opt.TavilyAPIURL, "https://api.tavily.com"), "/"),
 		firecrawlKey: strings.TrimSpace(opt.FirecrawlAPIKey),
@@ -101,9 +111,10 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	// resort so a slow extractor (e.g. a model browse that hangs) cannot
 	// starve the reliable fallback. Extractor tiers (Tavily/Firecrawl/Grok)
 	// run under extractorCtx (budget minus the reserve); basic HTTP runs under
-	// the full opCtx and is thus guaranteed at least the reserve.
+	// the full opCtx and is thus guaranteed at least the reserve. In strict
+	// mode there is no basic-HTTP tier, so extractors use the whole budget.
 	extractorCtx := opCtx
-	if dl, ok := opCtx.Deadline(); ok {
+	if dl, ok := opCtx.Deadline(); ok && !s.strict {
 		reserve := time.Until(dl) / 3
 		if reserve > 15*time.Second {
 			reserve = 15 * time.Second
@@ -162,11 +173,15 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	}
 
 	// Tier 4: basic HTTP GET + HTML-to-text (last resort, no key needed).
-	content, err := s.basicHTTPFetch(opCtx, target)
-	if err == nil && strings.TrimSpace(content) != "" {
-		return &Result{URL: target, Content: content, Tier: "http"}, nil
+	// Skipped in strict mode: the low-fidelity fallback is disabled so a
+	// failed extractor/model fails loud rather than degrading silently.
+	if !s.strict {
+		content, err := s.basicHTTPFetch(opCtx, target)
+		if err == nil && strings.TrimSpace(content) != "" {
+			return &Result{URL: target, Content: content, Tier: "http"}, nil
+		}
+		record("http", err)
 	}
-	record("http", err)
 
 	return nil, s.chainErr(target, trace, opCtx.Err())
 }
@@ -174,10 +189,14 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 // chainErr builds a visible, structured failure describing every tier tried.
 func (s *Service) chainErr(target string, trace []string, ctxErr error) error {
 	tiers := strings.Join(trace, "; ")
-	if ctxErr != nil {
-		return fmt.Errorf("fetch: budget exhausted before any tier succeeded for %s (tried: %s)", target, tiers)
+	mode := ""
+	if s.strict {
+		mode = " [strict: basic-HTTP fallback disabled]"
 	}
-	return fmt.Errorf("fetch: all extractors failed for %s (tried: %s)", target, tiers)
+	if ctxErr != nil {
+		return fmt.Errorf("fetch: budget exhausted before any tier succeeded for %s%s (tried: %s)", target, mode, tiers)
+	}
+	return fmt.Errorf("fetch: all extractors failed for %s%s (tried: %s)", target, mode, tiers)
 }
 
 func firstNonEmpty(a, b string) string {

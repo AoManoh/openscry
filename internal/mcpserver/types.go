@@ -1,8 +1,9 @@
 // Package mcpserver is the thin MCP adapter that exposes the openscry search
 // core over stdio JSON-RPC. The wire types mirror the MCP/JSON-RPC shapes
 // validated by openPic-mcp so existing MCP clients (Windsurf/Cascade) work
-// without change. Stage S1 keeps the dispatch loop synchronous; the
-// concurrent engine and resilience layer arrive in stage S2.
+// without change. Dispatch runs on a single concurrent engine (bounded
+// worker pool + bounded queue + cancellation registry); there is no
+// synchronous/concurrent dual track.
 package mcpserver
 
 import "encoding/json"
@@ -12,7 +13,7 @@ const (
 	JSONRPCVersion     = "2.0"
 	MCPProtocolVersion = "2024-11-05"
 	ServerName         = "openscry-mcp"
-	ServerVersion      = "0.1.0"
+	ServerVersion      = "0.1.0-s3"
 )
 
 // JSON-RPC 2.0 error codes (subset) plus an openscry tool-execution code.

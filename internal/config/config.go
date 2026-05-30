@@ -14,17 +14,11 @@ import (
 	"time"
 )
 
-// Configuration defaults. The default model is intentionally a named
-// constant (not hard-coded at the call site) so it can be overridden per
-// deployment via GROK_MODEL or per call via a CLI flag / MCP argument.
+// Configuration defaults. The model is deliberately NOT defaulted: per the
+// openscry model constraint the model must be user-supplied (GROK_MODEL, or
+// a per-call override) and is never defaulted or silently swapped on
+// failure -- a missing GROK_MODEL fails loud at startup (see Validate).
 const (
-	// DefaultModel mirrors the model proven working on the current grok2api
-	// deployment (grok-4.20-fast performs real, cited web search; the
-	// previously assumed grok-4.3-console returns HTTP 500 there). It is
-	// overridable via GROK_MODEL / --model and is never silently swapped on
-	// failure (see internal/grok error handling).
-	DefaultModel = "grok-4.20-fast"
-
 	// DefaultRequestTimeout bounds a single upstream search request.
 	DefaultRequestTimeout = 120 * time.Second
 	// MinRequestTimeout / MaxRequestTimeout clamp GROK_REQUEST_TIMEOUT.
@@ -43,6 +37,16 @@ const (
 	// (the proven path for grok2api). See ResolveSearchProvider.
 	DefaultSearchProvider = "auto"
 
+	// DefaultFetchFallback is the web_fetch degradation policy:
+	//   "full"   (default) -- run the whole multi-tier chain down to the
+	//            always-available basic-HTTP last resort; degradation is
+	//            visible (the tier is reported) and availability is maximised.
+	//   "strict" -- disable the low-fidelity basic-HTTP last resort so a
+	//            failed extractor/model fails loud instead of silently
+	//            degrading to HTML stripping.
+	// Operators choose per deployment via GROK_FETCH_FALLBACK.
+	DefaultFetchFallback = "full"
+
 	// Default extractor endpoints for the optional web_fetch fallback chain.
 	// They are only used when the corresponding API key is configured.
 	DefaultTavilyURL    = "https://api.tavily.com"
@@ -53,7 +57,7 @@ const (
 type Config struct {
 	APIBaseURL     string        // GROK_API_URL (required) — OpenAI-compatible base, e.g. https://grok.aomanoh.tech/v1
 	APIKey         string        // GROK_API_KEY (required)
-	Model          string        // GROK_MODEL (default DefaultModel)
+	Model          string        // GROK_MODEL (required; user-supplied, never defaulted)
 	RequestTimeout time.Duration // GROK_REQUEST_TIMEOUT (default 120s, clamped [5s,600s])
 	Concurrency    int           // GROK_CONCURRENCY — MCP worker pool size (default 8, clamp [1,100])
 	QueueSize      int           // GROK_QUEUE_SIZE — MCP request queue size (default 64, clamp [1,10000])
@@ -62,6 +66,10 @@ type Config struct {
 	// SearchProvider is the raw mode (auto|chat|responses); resolve the
 	// effective mode for a given base URL via ResolveSearchProvider.
 	SearchProvider string // GROK_SEARCH_PROVIDER (default auto)
+
+	// FetchFallback is the web_fetch degradation policy (full|strict); see
+	// DefaultFetchFallback. "strict" disables the basic-HTTP last resort.
+	FetchFallback string // GROK_FETCH_FALLBACK (default full)
 
 	// Optional web_fetch extractor providers. A provider is only attempted
 	// when its API key is non-empty; otherwise that fallback tier is skipped.
@@ -76,12 +84,13 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		APIBaseURL:      strings.TrimSpace(os.Getenv("GROK_API_URL")),
 		APIKey:          strings.TrimSpace(os.Getenv("GROK_API_KEY")),
-		Model:           firstNonEmpty(strings.TrimSpace(os.Getenv("GROK_MODEL")), DefaultModel),
+		Model:           strings.TrimSpace(os.Getenv("GROK_MODEL")),
 		RequestTimeout:  DefaultRequestTimeout,
 		Concurrency:     DefaultConcurrency,
 		QueueSize:       DefaultQueueSize,
 		Debug:           parseBoolEnv("GROK_DEBUG"),
 		SearchProvider:  DefaultSearchProvider,
+		FetchFallback:   DefaultFetchFallback,
 		TavilyAPIKey:    strings.TrimSpace(os.Getenv("TAVILY_API_KEY")),
 		TavilyAPIURL:    firstNonEmpty(strings.TrimSpace(os.Getenv("TAVILY_API_URL")), DefaultTavilyURL),
 		FirecrawlAPIKey: strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")),
@@ -120,6 +129,15 @@ func Load() (*Config, error) {
 		}
 	}
 
+	if raw := strings.ToLower(strings.TrimSpace(os.Getenv("GROK_FETCH_FALLBACK"))); raw != "" {
+		switch raw {
+		case "full", "strict":
+			cfg.FetchFallback = raw
+		default:
+			return nil, fmt.Errorf("invalid GROK_FETCH_FALLBACK %q (want full|strict)", raw)
+		}
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -133,6 +151,9 @@ func (c *Config) Validate() error {
 	}
 	if c.APIKey == "" {
 		return errors.New("GROK_API_KEY is required")
+	}
+	if c.Model == "" {
+		return errors.New("GROK_MODEL is required: the model is never defaulted -- set it explicitly to a model your grok2api deployment exposes")
 	}
 	return nil
 }

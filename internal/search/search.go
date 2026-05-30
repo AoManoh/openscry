@@ -117,6 +117,10 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	if s.provider == "responses" {
 		return nil, fmt.Errorf("search: GROK_SEARCH_PROVIDER=responses is not implemented yet — use chat (default) or unset it; the responses path needs annotation-passthrough verification first")
 	}
+	// Model selection: an explicit per-call override wins; otherwise use the
+	// service's configured model (the user-supplied GROK_MODEL). There is no
+	// code default and no fallback to another model on failure -- an
+	// unavailable model surfaces as an explicit grok error (fail-loud).
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = s.defaultModel
@@ -172,6 +176,14 @@ func isRetryable(err error) bool {
 // limit and 5xx. A model error, empty result, auth error or client
 // cancellation is NOT an upstream-health signal and must not trip the
 // breaker — otherwise a single bad model name could blackhole all traffic.
+//
+// Known limitation (accepted, CR-003): the breaker is process-wide and a
+// persistent upstream 5xx counts as a failure regardless of which model
+// produced it. Under the single-model norm this is correct (it sheds load
+// from a broken upstream); only when callers mix models via per-call
+// overrides could a 5xx-ing model trip the shared breaker for healthy
+// models. Keying the breaker per model is deferred; see
+// docs/code-review/2026-05-31-cr-openscry-s1-s3.md (CR-003).
 func isBreakerFailure(err error) bool {
 	if errors.Is(err, resilience.ErrCircuitOpen) {
 		return false

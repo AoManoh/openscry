@@ -212,3 +212,26 @@ func TestFetchReservesBudgetForBasicHTTP(t *testing.T) {
 		t.Fatalf("content=%q", res.Content)
 	}
 }
+
+func TestFetchStrictDisablesBasicHTTP(t *testing.T) {
+	// In strict mode (GROK_FETCH_FALLBACK=strict) the basic-HTTP last resort
+	// is disabled. When the grok tier fails and no Tavily/Firecrawl is
+	// configured, the fetch must fail loud instead of degrading.
+	grokFail := newStatusServer(404, `{"error":{"message":"model not found"}}`)
+	defer grokFail.Close()
+
+	svc := New(grok.NewClient(grokFail.URL, "k", 5*time.Second), Options{
+		Model:  "m",
+		Strict: true,
+	})
+	_, err := svc.Fetch(context.Background(), "https://example.com/page")
+	if err == nil {
+		t.Fatal("expected fail-loud in strict mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "strict") {
+		t.Fatalf("error should mention strict mode, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "http:") {
+		t.Fatalf("strict mode should not have tried the http tier, got: %v", err)
+	}
+}
