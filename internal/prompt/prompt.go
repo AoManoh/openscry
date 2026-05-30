@@ -1,7 +1,7 @@
 // Package prompt holds the system prompts and prompt helpers used by the
-// search core. The SearchPrompt is ported faithfully from the Python
-// baseline (grok_search/utils.py) so search behaviour is comparable during
-// the migration; prompt tuning is deferred to stage S3.
+// search and web_fetch cores. SearchPrompt and FetchPrompt are ported
+// faithfully from the Python baseline (grok_search/utils.py) so behaviour is
+// comparable during the migration; prompt tuning remains deferred.
 package prompt
 
 import (

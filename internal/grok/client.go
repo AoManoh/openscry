@@ -1,7 +1,9 @@
 // Package grok is a minimal client for grok2api's OpenAI-compatible
-// /chat/completions endpoint. Stage S1 implements a single streaming search
-// call; the resilience layer (circuit breaker, backpressure, retry control)
-// is added in stage S2 per docs/refactor/2026-05-30-openscry-go-rewrite.md.
+// /chat/completions endpoint. It exposes a single streaming primitive
+// (Complete) shared by the search and web_fetch paths; the resilience layer
+// (circuit breaker, retry budget, timeouts) wraps it in internal/search and
+// internal/fetch. Failures are returned as a structured *Error and the model
+// is never silently changed.
 package grok
 
 import (

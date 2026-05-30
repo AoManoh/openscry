@@ -23,7 +23,10 @@ const maxBasicHTTPBytes = 4 << 20 // 4 MiB
 // tavilyExtract calls Tavily's /extract endpoint and returns the page's
 // raw markdown content. Only invoked when a Tavily key is configured.
 func (s *Service) tavilyExtract(ctx context.Context, target string) (string, error) {
-	body, _ := json.Marshal(map[string]any{"urls": []string{target}, "format": "markdown"})
+	body, err := json.Marshal(map[string]any{"urls": []string{target}, "format": "markdown"})
+	if err != nil {
+		return "", fmt.Errorf("tavily marshal request: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tavilyURL+"/extract", bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -55,7 +58,10 @@ func (s *Service) tavilyExtract(ctx context.Context, target string) (string, err
 // firecrawlScrape calls Firecrawl's /scrape endpoint and returns markdown.
 // Only invoked when a Firecrawl key is configured.
 func (s *Service) firecrawlScrape(ctx context.Context, target string) (string, error) {
-	body, _ := json.Marshal(map[string]any{"url": target, "formats": []string{"markdown"}})
+	body, err := json.Marshal(map[string]any{"url": target, "formats": []string{"markdown"}})
+	if err != nil {
+		return "", fmt.Errorf("firecrawl marshal request: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.firecrawlURL+"/scrape", bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -97,6 +103,15 @@ func (s *Service) basicHTTPFetch(ctx context.Context, target string) (string, er
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("http status %d", resp.StatusCode)
+	}
+	// The basic-HTTP tier renders HTML to text; refuse non-HTML bodies
+	// (JSON, binary, PDF, ...) rather than emitting stripped garbage. An
+	// empty/absent Content-Type is allowed (many sites omit it for HTML).
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+		if mediaType != "" && mediaType != "text/html" && mediaType != "application/xhtml+xml" && !strings.HasPrefix(mediaType, "text/") {
+			return "", fmt.Errorf("http content-type %q is not HTML/text", mediaType)
+		}
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBasicHTTPBytes))
 	if err != nil {

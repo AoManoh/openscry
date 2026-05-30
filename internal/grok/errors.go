@@ -1,6 +1,9 @@
 package grok
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Code classifies an upstream failure so callers (and ultimately the AI
 // client) can see exactly why a search did not succeed. Per the openscry
@@ -36,7 +39,7 @@ type Error struct {
 	Code      Code
 	Message   string
 	Status    int  // HTTP status when applicable; 0 otherwise
-	Retryable bool // hint for the future resilience layer (stage S2)
+	Retryable bool // hint for the resilience layer (retry/breaker classification)
 }
 
 func (e *Error) Error() string {
@@ -46,8 +49,12 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("grok[%s]: %s", e.Code, e.Message)
 }
 
-// AsError extracts a *Error from err, if present.
+// AsError extracts a *Error from err, unwrapping wrapped errors (errors.As)
+// so classification stays correct even if a caller wraps the error with %w.
 func AsError(err error) (*Error, bool) {
-	ge, ok := err.(*Error)
-	return ge, ok
+	var ge *Error
+	if errors.As(err, &ge) {
+		return ge, true
+	}
+	return nil, false
 }

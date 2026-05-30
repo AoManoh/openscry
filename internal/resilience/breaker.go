@@ -171,9 +171,14 @@ func (b *Breaker) Guard(fn func() error, isFailure func(error) bool) error {
 	if !b.Allow() {
 		return ErrCircuitOpen
 	}
-	err := fn()
-	fail := err != nil && (isFailure == nil || isFailure(err))
-	b.OnResult(fail)
+	// Record the outcome via defer so that even if fn panics the half-open
+	// probe slot admitted by Allow is released (counted as a failure)
+	// instead of leaking and wedging the breaker.
+	var err error
+	fail := true
+	defer func() { b.OnResult(fail) }()
+	err = fn()
+	fail = err != nil && (isFailure == nil || isFailure(err))
 	return err
 }
 
