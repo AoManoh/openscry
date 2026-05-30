@@ -14,8 +14,9 @@ subcommands and as MCP tools for clients like Windsurf/Cascade.
 
 ## Design principles
 
-- **Model is configurable, never hard-coded.** Default `grok-4.3-console`,
-  overridable via `GROK_MODEL` or `--model`.
+- **Model is configurable, never hard-coded.** Default `grok-4.20-fast`
+  (proven working on the current grok2api deployment), overridable via
+  `GROK_MODEL` or `--model`.
 - **Failures are explicit.** A model/provider failure returns a structured
   error and never silently switches to a different model. An empty result is
   reported as an explicit error, not a hollow success.

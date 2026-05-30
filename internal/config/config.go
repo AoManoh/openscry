@@ -17,9 +17,12 @@ import (
 // constant (not hard-coded at the call site) so it can be overridden per
 // deployment via GROK_MODEL or per call via a CLI flag / MCP argument.
 const (
-	// DefaultModel is the console real-search model. Overridable; never
-	// silently swapped on failure (see internal/grok error handling).
-	DefaultModel = "grok-4.3-console"
+	// DefaultModel mirrors the model proven working on the current grok2api
+	// deployment (grok-4.20-fast performs real, cited web search; the
+	// previously assumed grok-4.3-console returns HTTP 500 there). It is
+	// overridable via GROK_MODEL / --model and is never silently swapped on
+	// failure (see internal/grok error handling).
+	DefaultModel = "grok-4.20-fast"
 
 	// DefaultRequestTimeout bounds a single upstream search request.
 	DefaultRequestTimeout = 120 * time.Second
