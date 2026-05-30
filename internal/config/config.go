@@ -29,6 +29,13 @@ const (
 	// MinRequestTimeout / MaxRequestTimeout clamp GROK_REQUEST_TIMEOUT.
 	MinRequestTimeout = 5 * time.Second
 	MaxRequestTimeout = 600 * time.Second
+
+	// DefaultConcurrency / DefaultQueueSize size the MCP engine's worker
+	// pool and bounded request queue (backpressure).
+	DefaultConcurrency = 8
+	DefaultQueueSize   = 64
+	maxConcurrency     = 100
+	maxQueueSize       = 10000
 )
 
 // Config holds the resolved runtime configuration.
@@ -37,6 +44,8 @@ type Config struct {
 	APIKey         string        // GROK_API_KEY (required)
 	Model          string        // GROK_MODEL (default DefaultModel)
 	RequestTimeout time.Duration // GROK_REQUEST_TIMEOUT (default 120s, clamped [5s,600s])
+	Concurrency    int           // GROK_CONCURRENCY — MCP worker pool size (default 8, clamp [1,100])
+	QueueSize      int           // GROK_QUEUE_SIZE — MCP request queue size (default 64, clamp [1,10000])
 	Debug          bool          // GROK_DEBUG
 }
 
@@ -47,6 +56,8 @@ func Load() (*Config, error) {
 		APIKey:         strings.TrimSpace(os.Getenv("GROK_API_KEY")),
 		Model:          firstNonEmpty(strings.TrimSpace(os.Getenv("GROK_MODEL")), DefaultModel),
 		RequestTimeout: DefaultRequestTimeout,
+		Concurrency:    DefaultConcurrency,
+		QueueSize:      DefaultQueueSize,
 		Debug:          parseBoolEnv("GROK_DEBUG"),
 	}
 
@@ -56,6 +67,21 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid GROK_REQUEST_TIMEOUT: %w", err)
 		}
 		cfg.RequestTimeout = clampDuration(d, MinRequestTimeout, MaxRequestTimeout)
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("GROK_CONCURRENCY")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GROK_CONCURRENCY (want integer): %w", err)
+		}
+		cfg.Concurrency = clampInt(n, 1, maxConcurrency)
+	}
+	if raw := strings.TrimSpace(os.Getenv("GROK_QUEUE_SIZE")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GROK_QUEUE_SIZE (want integer): %w", err)
+		}
+		cfg.QueueSize = clampInt(n, 1, maxQueueSize)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -98,6 +124,16 @@ func parseTimeout(raw string) (time.Duration, error) {
 }
 
 func clampDuration(v, lo, hi time.Duration) time.Duration {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func clampInt(v, lo, hi int) int {
 	if v < lo {
 		return lo
 	}

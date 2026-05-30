@@ -26,7 +26,7 @@ import (
 	"github.com/AoManoh/openscry/internal/search"
 )
 
-const version = "0.1.0-s1"
+const version = "0.1.0-s2"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -63,6 +63,8 @@ environment:
   GROK_API_KEY          required
   GROK_MODEL            optional, default `+config.DefaultModel+`
   GROK_REQUEST_TIMEOUT  optional, default 120s (accepts "120" seconds or "2m")
+  GROK_CONCURRENCY      optional, MCP worker pool size (default 8)
+  GROK_QUEUE_SIZE       optional, MCP request queue size (default 64)
 `)
 }
 
@@ -125,7 +127,10 @@ func runMCP(args []string) int {
 	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
 	svc := search.New(client, cfg.Model)
 
-	srv := mcpserver.New(os.Stdin, os.Stdout, logger)
+	srv := mcpserver.NewWithConfig(os.Stdin, os.Stdout, logger, mcpserver.EngineConfig{
+		MaxConcurrentRequests: cfg.Concurrency,
+		RequestQueueSize:      cfg.QueueSize,
+	})
 	srv.Register(mcpserver.WebSearchTool(svc))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,7 +143,9 @@ func runMCP(args []string) int {
 		cancel()
 	}()
 
-	logger.Info("openscry.mcp_serving", "model", cfg.Model, "base_url", cfg.APIBaseURL)
+	logger.Info("openscry.mcp_serving",
+		"model", cfg.Model, "base_url", cfg.APIBaseURL,
+		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize)
 	if err := srv.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("openscry.serve_ended", "err", err.Error())
 		return 1

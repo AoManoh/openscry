@@ -2,13 +2,16 @@ package search
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/AoManoh/openscry/internal/grok"
+	"github.com/AoManoh/openscry/internal/resilience"
 )
 
 func TestSearchReturnsAccumulatedContent(t *testing.T) {
@@ -64,11 +67,77 @@ func TestSearchEmptyContentIsVisibleError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := New(grok.NewClient(srv.URL, "k", 5*time.Second), "m")
+	// MaxAttempts=1 keeps the test fast and focused on "empty is a visible
+	// error" rather than exercising the retry-on-empty path.
+	svc := NewWithOptions(grok.NewClient(srv.URL, "k", 5*time.Second), "m", Options{MaxAttempts: 1})
 	_, err := svc.Search(context.Background(), Request{Query: "hi"})
 	ge, ok := grok.AsError(err)
 	if !ok || ge.Code != grok.CodeEmpty {
 		t.Fatalf("expected empty error, got %v", err)
+	}
+}
+
+func TestSearchRetriesTransientThenSucceeds(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) <= 2 {
+			w.WriteHeader(http.StatusInternalServerError) // transient 5xx
+			_, _ = w.Write([]byte(`{"error":{"message":"upstream hiccup"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n"))
+	}))
+	defer srv.Close()
+
+	svc := NewWithOptions(grok.NewClient(srv.URL, "k", 5*time.Second), "m",
+		Options{MaxAttempts: 3, RetryBaseDelay: time.Millisecond})
+	res, err := svc.Search(context.Background(), Request{Query: "hi"})
+	if err != nil {
+		t.Fatalf("expected success after retries, got %v", err)
+	}
+	if res.Content != "recovered" {
+		t.Fatalf("content=%q want \"recovered\"", res.Content)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("upstream calls=%d want 3 (2 transient failures + 1 success)", got)
+	}
+}
+
+// TestSearchCircuitBreakerOpensUnderSustainedFailure is the S2 fault-injection
+// gate: sustained upstream 5xx must trip the breaker so further calls fail
+// fast with ErrCircuitOpen instead of hammering the dead upstream.
+func TestSearchCircuitBreakerOpensUnderSustainedFailure(t *testing.T) {
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"down"}}`))
+	}))
+	defer srv.Close()
+
+	// FailureThreshold=2, no retry: the first two searches each record one
+	// transport failure and trip the breaker; the third must fail fast with
+	// ErrCircuitOpen without reaching upstream.
+	svc := NewWithOptions(grok.NewClient(srv.URL, "k", 5*time.Second), "m", Options{
+		MaxAttempts: 1,
+		Breaker:     resilience.BreakerConfig{FailureThreshold: 2, OpenDuration: time.Minute},
+	})
+
+	_, err1 := svc.Search(context.Background(), Request{Query: "q"})
+	_, err2 := svc.Search(context.Background(), Request{Query: "q"})
+	if err1 == nil || err2 == nil {
+		t.Fatalf("expected first two searches to fail, got %v / %v", err1, err2)
+	}
+	callsAfterTrip := calls.Load()
+
+	_, err3 := svc.Search(context.Background(), Request{Query: "q"})
+	if !errors.Is(err3, resilience.ErrCircuitOpen) {
+		t.Fatalf("third search err=%v want ErrCircuitOpen", err3)
+	}
+	if got := calls.Load(); got != callsAfterTrip {
+		t.Fatalf("breaker-open call reached upstream: calls %d -> %d", callsAfterTrip, got)
 	}
 }
 
