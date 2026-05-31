@@ -2,11 +2,14 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/AoManoh/openscry/internal/fetch"
+	"github.com/AoManoh/openscry/internal/mapper"
+	"github.com/AoManoh/openscry/internal/planner"
 	"github.com/AoManoh/openscry/internal/search"
 )
 
@@ -111,6 +114,172 @@ func WebFetchTool(svc *fetch.Service) (Tool, ToolHandler) {
 		header := fmt.Sprintf("<!-- openscry web_fetch: tier=%s url=%s -->\n", res.Tier, res.URL)
 		return &ToolCallResult{
 			Content: []ContentItem{{Type: "text", Text: header + res.Content}},
+		}, nil
+	}
+
+	return def, handler
+}
+
+// WebMapTool builds the `web_map` tool: discover a website's URL structure
+// by graph traversal. Uses Tavily /map when configured, otherwise pure HTTP
+// BFS crawl. Best-effort under the OpMap timeout budget.
+func WebMapTool(svc *mapper.Service) (Tool, ToolHandler) {
+	def := Tool{
+		Name: "web_map",
+		Description: "Map a website's structure by traversing it as a graph, discovering URLs. " +
+			"Uses Tavily /map (when TAVILY_API_KEY is set) for high-quality results including " +
+			"JS-rendered pages, otherwise falls back to pure HTTP crawl. Returns discovered URLs " +
+			"as a JSON list. Use max_depth, max_breadth, and limit to control traversal scope.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"url": {
+					Type:        "string",
+					Description: "Root URL to begin the mapping (absolute http/https).",
+				},
+				"max_depth": {
+					Type:        "string",
+					Description: "Maximum traversal depth from the root URL (default 1, max 5).",
+				},
+				"max_breadth": {
+					Type:        "string",
+					Description: "Maximum links to follow per page (default 20, max 500).",
+				},
+				"limit": {
+					Type:        "string",
+					Description: "Total number of URLs to discover before stopping (default 50, max 500).",
+				},
+				"instructions": {
+					Type:        "string",
+					Description: "Optional natural-language instructions to filter or focus the crawl (e.g. \"only documentation pages\").",
+				},
+				"timeout": {
+					Type:        "string",
+					Description: "Optional total timeout as a Go duration (e.g. \"60s\"). Empty uses the configured OpMap timeout (90s).",
+				},
+			},
+			Required:             []string{"url"},
+			AdditionalProperties: false,
+		},
+	}
+
+	handler := func(ctx context.Context, args map[string]any) (*ToolCallResult, error) {
+		rawURL, _ := args["url"].(string)
+		if to, _ := args["timeout"].(string); strings.TrimSpace(to) != "" {
+			d, err := time.ParseDuration(strings.TrimSpace(to))
+			if err != nil {
+				return nil, fmt.Errorf("web_map: invalid timeout %q (want a Go duration like 60s): %w", to, err)
+			}
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+
+		req := mapper.Request{
+			URL:          rawURL,
+			MaxDepth:     parseIntArg(args, "max_depth", 1),
+			MaxBreadth:   parseIntArg(args, "max_breadth", 20),
+			Limit:        parseIntArg(args, "limit", 50),
+			Instructions: stringArg(args, "instructions"),
+		}
+
+		res, err := svc.Map(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		out, _ := json.Marshal(map[string]any{
+			"root_url": res.RootURL,
+			"tier":     res.Tier,
+			"count":    len(res.URLs),
+			"urls":     res.URLs,
+		})
+		return &ToolCallResult{
+			Content: []ContentItem{{Type: "text", Text: string(out)}},
+		}, nil
+	}
+
+	return def, handler
+}
+
+// parseIntArg extracts a numeric argument from the MCP args map. JSON numbers
+// may arrive as float64 or string; this handles both gracefully.
+func parseIntArg(args map[string]any, key string, fallback int) int {
+	v, ok := args[key]
+	if !ok {
+		return fallback
+	}
+	switch n := v.(type) {
+	case float64:
+		if int(n) > 0 {
+			return int(n)
+		}
+	case string:
+		if n != "" {
+			var i int
+			if _, err := fmt.Sscanf(n, "%d", &i); err == nil && i > 0 {
+				return i
+			}
+		}
+	}
+	return fallback
+}
+
+// stringArg extracts a trimmed string argument.
+func stringArg(args map[string]any, key string) string {
+	s, _ := args[key].(string)
+	return strings.TrimSpace(s)
+}
+
+// ResearchPlanTool builds the `research_plan` tool: generate a structured
+// offline research plan for a given question. The model produces a JSON plan
+// containing intent, complexity, sub-queries, search terms, execution order,
+// and research quality strategies (fetch_before_claim, gap_check).
+func ResearchPlanTool(svc *planner.Service) (Tool, ToolHandler) {
+	def := Tool{
+		Name: "research_plan",
+		Description: "Generate a structured offline research plan for a question. The model " +
+			"analyses the question and produces a JSON plan with intent analysis, complexity " +
+			"assessment, decomposed sub-queries, concrete search terms, execution order, and " +
+			"research quality strategies (fetch_before_claim, gap_check). Use this before " +
+			"executing a complex multi-step search to organize the approach.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]Property{
+				"question": {
+					Type:        "string",
+					Description: "The research question to plan for. Be specific and include relevant context.",
+				},
+				"timeout": {
+					Type:        "string",
+					Description: "Optional timeout as a Go duration (e.g. \"60s\"). Empty uses the configured search timeout.",
+				},
+			},
+			Required:             []string{"question"},
+			AdditionalProperties: false,
+		},
+	}
+
+	handler := func(ctx context.Context, args map[string]any) (*ToolCallResult, error) {
+		question, _ := args["question"].(string)
+		if to, _ := args["timeout"].(string); strings.TrimSpace(to) != "" {
+			d, err := time.ParseDuration(strings.TrimSpace(to))
+			if err != nil {
+				return nil, fmt.Errorf("research_plan: invalid timeout %q: %w", to, err)
+			}
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+
+		plan, err := svc.Plan(ctx, question)
+		if err != nil {
+			return nil, err
+		}
+
+		out, _ := json.Marshal(plan)
+		return &ToolCallResult{
+			Content: []ContentItem{{Type: "text", Text: string(out)}},
 		}, nil
 	}
 

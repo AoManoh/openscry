@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,7 +24,9 @@ import (
 	"github.com/AoManoh/openscry/internal/config"
 	"github.com/AoManoh/openscry/internal/fetch"
 	"github.com/AoManoh/openscry/internal/grok"
+	"github.com/AoManoh/openscry/internal/mapper"
 	"github.com/AoManoh/openscry/internal/mcpserver"
+	"github.com/AoManoh/openscry/internal/planner"
 	"github.com/AoManoh/openscry/internal/search"
 )
 
@@ -40,6 +43,10 @@ func main() {
 		os.Exit(runSearch(os.Args[2:]))
 	case "fetch":
 		os.Exit(runFetch(os.Args[2:]))
+	case "map":
+		os.Exit(runMap(os.Args[2:]))
+	case "plan":
+		os.Exit(runPlan(os.Args[2:]))
 	case "mcp":
 		os.Exit(runMCP(os.Args[2:]))
 	case "version", "--version", "-v":
@@ -59,7 +66,9 @@ func usage() {
 usage:
   openscry search [--model M] [--platform P] [--timeout D] "your query"
   openscry fetch  [--timeout D] <url>
-  openscry mcp        run the thin MCP adapter over stdio (tools: web_search, web_fetch)
+  openscry map    [--depth N] [--breadth N] [--limit N] [--instructions S] [--timeout D] <url>
+  openscry plan   [--timeout D] "your research question"
+  openscry mcp        run the thin MCP adapter over stdio (tools: web_search, web_fetch, web_map, research_plan)
   openscry version    print version
 
 environment:
@@ -149,8 +158,17 @@ func runMCP(args []string) int {
 		MaxConcurrentRequests: cfg.Concurrency,
 		RequestQueueSize:      cfg.QueueSize,
 	})
+	mapSvc := mapper.New(mapper.Options{
+		TavilyAPIKey: cfg.TavilyAPIKey,
+		TavilyAPIURL: cfg.TavilyAPIURL,
+	})
+
+	planSvc := planner.New(client, planner.Options{Model: cfg.Model})
+
 	srv.Register(mcpserver.WebSearchTool(searchSvc))
 	srv.Register(mcpserver.WebFetchTool(fetchSvc))
+	srv.Register(mcpserver.WebMapTool(mapSvc))
+	srv.Register(mcpserver.ResearchPlanTool(planSvc))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -165,7 +183,7 @@ func runMCP(args []string) int {
 	logger.Info("openscry.mcp_serving",
 		"model", cfg.Model, "base_url", cfg.APIBaseURL,
 		"provider", provider, "fetch_fallback", cfg.FetchFallback,
-		"tools", "web_search,web_fetch",
+		"tools", "web_search,web_fetch,web_map,research_plan",
 		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
 		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize)
 	if err := srv.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -221,5 +239,106 @@ usage: openscry fetch [--timeout D] <url>`)
 	// stays clean for piping the fetched content.
 	fmt.Fprintf(os.Stderr, "fetched via tier=%s\n", res.Tier)
 	fmt.Println(res.Content)
+	return 0
+}
+
+func runMap(args []string) int {
+	fs := flag.NewFlagSet("map", flag.ContinueOnError)
+	depth := fs.Int("depth", 1, "maximum traversal depth from root (default 1)")
+	breadth := fs.Int("breadth", 20, "maximum links to follow per page (default 20)")
+	limit := fs.Int("limit", 50, "total URL cap (default 50)")
+	instructions := fs.String("instructions", "", "natural-language filter for the crawl")
+	timeout := fs.Duration("timeout", 0, "total map budget (e.g. 60s); 0 uses the configured OpMap timeout")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	target := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if target == "" {
+		fmt.Fprintln(os.Stderr, `error: missing url
+usage: openscry map [--depth N] [--breadth N] [--limit N] [--instructions S] [--timeout D] <url>`)
+		return 2
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		return 1
+	}
+
+	mapSvc := mapper.New(mapper.Options{
+		TavilyAPIKey: cfg.TavilyAPIKey,
+		TavilyAPIURL: cfg.TavilyAPIURL,
+	})
+
+	ctx := context.Background()
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+	}
+
+	res, err := mapSvc.Map(ctx, mapper.Request{
+		URL:          target,
+		MaxDepth:     *depth,
+		MaxBreadth:   *breadth,
+		Limit:        *limit,
+		Instructions: *instructions,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "map failed:", err)
+		return 1
+	}
+
+	fmt.Fprintf(os.Stderr, "mapped via tier=%s, found %d URLs\n", res.Tier, len(res.URLs))
+	for _, u := range res.URLs {
+		fmt.Println(u)
+	}
+	return 0
+}
+
+func runPlan(args []string) int {
+	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
+	timeout := fs.Duration("timeout", 0, "total plan budget (e.g. 60s); 0 uses the configured search timeout")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	question := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if question == "" {
+		fmt.Fprintln(os.Stderr, `error: missing research question
+usage: openscry plan [--timeout D] "your research question"`)
+		return 2
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config error:", err)
+		return 1
+	}
+
+	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
+	planSvc := planner.New(client, planner.Options{Model: cfg.Model})
+
+	ctx := context.Background()
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+	}
+
+	plan, err := planSvc.Plan(ctx, question)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "plan failed:", err)
+		return 1
+	}
+
+	// Output the structured plan as indented JSON for readability.
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(plan); err != nil {
+		fmt.Fprintln(os.Stderr, "encode error:", err)
+		return 1
+	}
 	return 0
 }
