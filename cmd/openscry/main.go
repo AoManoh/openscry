@@ -29,6 +29,7 @@ import (
 	"github.com/AoManoh/openscry/internal/planner"
 	"github.com/AoManoh/openscry/internal/refsource"
 	"github.com/AoManoh/openscry/internal/search"
+	"github.com/AoManoh/openscry/internal/tasks"
 )
 
 const version = mcpserver.ServerVersion
@@ -199,10 +200,18 @@ func runMCP(args []string) int {
 
 	planSvc := planner.New(client, planner.Options{Model: cfg.Model})
 
+	// Process-level async task store backing the submit/get/cancel/list tools.
+	taskStore := tasks.NewStore()
+
 	srv.Register(mcpserver.WebSearchTool(searchSvc))
 	srv.Register(mcpserver.WebFetchTool(fetchSvc))
 	srv.Register(mcpserver.WebMapTool(mapSvc))
 	srv.Register(mcpserver.ResearchPlanTool(planSvc))
+	srv.Register(mcpserver.WebSearchBatchTool(searchSvc))
+	srv.Register(mcpserver.SubmitSearchTaskTool(taskStore, searchSvc))
+	srv.Register(mcpserver.GetSearchTaskResultTool(taskStore))
+	srv.Register(mcpserver.CancelSearchTaskTool(taskStore))
+	srv.Register(mcpserver.ListSearchTasksTool(taskStore))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -217,7 +226,7 @@ func runMCP(args []string) int {
 	logger.Info("openscry.mcp_serving",
 		"model", cfg.Model, "base_url", cfg.APIBaseURL,
 		"provider", provider, "fetch_fallback", cfg.FetchFallback,
-		"tools", "web_search,web_fetch,web_map,research_plan",
+		"tools", "web_search,web_fetch,web_map,research_plan,web_search_batch,submit_search_task,get_search_task_result,cancel_search_task,list_search_tasks",
 		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
 		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize)
 	if err := srv.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
