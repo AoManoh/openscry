@@ -6,6 +6,9 @@
 *.out
 coverage.*
 
+# Test files (local only, not committed)
+*_test.go
+
 # Local environment / secrets
 .env
 .env.local
