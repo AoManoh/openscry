@@ -9,11 +9,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AoManoh/openscry/internal/grok"
 	"github.com/AoManoh/openscry/internal/prompt"
+	"github.com/AoManoh/openscry/internal/refsource"
 	"github.com/AoManoh/openscry/internal/resilience"
 	"github.com/AoManoh/openscry/internal/sources"
 )
@@ -29,6 +32,7 @@ type Service struct {
 	profiles     resilience.Profiles
 	breaker      *resilience.Breaker
 	retryOpts    resilience.RetryOptions
+	refProvider  *refsource.Provider // optional extra_sources fan-out; nil disables it
 }
 
 // Options tunes the search service's resilience layer. The zero value is
@@ -36,11 +40,12 @@ type Service struct {
 type Options struct {
 	Profiles                resilience.Profiles
 	Breaker                 resilience.BreakerConfig
-	MaxAttempts             int           // total attempts incl. first (default 3)
-	RetryBaseDelay          time.Duration // first backoff delay (default 500ms)
-	RetryBudgetBurst        int           // shared retry-budget burst (default 8)
-	RetryBudgetRefillPerSec float64       // budget refill rate (default 2/s)
-	Provider                string        // resolved provider mode ("chat"|"responses"); empty = chat
+	MaxAttempts             int                 // total attempts incl. first (default 3)
+	RetryBaseDelay          time.Duration       // first backoff delay (default 500ms)
+	RetryBudgetBurst        int                 // shared retry-budget burst (default 8)
+	RetryBudgetRefillPerSec float64             // budget refill rate (default 2/s)
+	Provider                string              // resolved provider mode ("chat"|"responses"); empty = chat
+	RefProvider             *refsource.Provider // optional extra_sources reference fan-out
 }
 
 // New constructs a Service with default resilience settings.
@@ -75,6 +80,7 @@ func NewWithOptions(client *grok.Client, defaultModel string, opt Options) *Serv
 		client:       client,
 		defaultModel: defaultModel,
 		provider:     provider,
+		refProvider:  opt.RefProvider,
 		profiles:     opt.Profiles.Normalize(),
 		breaker:      resilience.NewBreaker(opt.Breaker),
 		retryOpts: resilience.RetryOptions{
@@ -93,6 +99,11 @@ type Request struct {
 	Query    string
 	Platform string // optional platform focus (e.g. "GitHub", "Reddit")
 	Model    string // optional per-call model override
+	// ExtraSources, when > 0, requests that many additional reference
+	// sources from Tavily/Firecrawl search (see internal/refsource), fetched
+	// concurrently with the Grok answer and merged into Result.Sources. It is
+	// a no-op when no RefProvider is configured.
+	ExtraSources int
 }
 
 // Result is a successful search result. Content is the answer with any
@@ -103,6 +114,10 @@ type Result struct {
 	Content string
 	Model   string
 	Sources []sources.Source
+	// Warning is non-empty when a non-fatal degradation occurred — e.g. the
+	// Grok answer succeeded but one or more extra_sources tiers failed. The
+	// primary result is still valid; the warning makes the gap visible.
+	Warning string
 }
 
 // Search executes one web search through the resilience layer. The model is
@@ -136,6 +151,24 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	opCtx, cancel := context.WithTimeout(ctx, s.profiles.For(resilience.OpSearch))
 	defer cancel()
 
+	// Extra reference sources (Tavily/Firecrawl search) run concurrently with
+	// the Grok answer so they overlap the dominant streaming latency. They are
+	// strictly augmentation: a refsource failure never fails the search, and
+	// the results are only attached when the Grok answer succeeds.
+	useRef := req.ExtraSources > 0 && s.refProvider != nil && s.refProvider.Available()
+	var (
+		refSrc      []sources.Source
+		refFailures []refsource.Failure
+		refWG       sync.WaitGroup
+	)
+	if useRef {
+		refWG.Add(1)
+		go func() {
+			defer refWG.Done()
+			refSrc, refFailures = s.refProvider.Search(opCtx, query, req.ExtraSources)
+		}()
+	}
+
 	content, err := resilience.Retry(opCtx, s.retryOpts, func(c context.Context) (string, error) {
 		var out string
 		gerr := s.breaker.Guard(func() error {
@@ -145,14 +178,37 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 		}, isBreakerFailure)
 		return out, gerr
 	})
+	if useRef {
+		refWG.Wait() // join before returning so the goroutine never outlives the call
+	}
 	if err != nil {
 		return nil, err
 	}
 	// Separate the answer from its citations and normalize heterogeneous
 	// upstream source formats into one consistent list. When no citations are
 	// present, answer == content and Sources is nil (no behavior change).
-	answer, src := sources.Split(content)
-	return &Result{Content: answer, Model: model, Sources: src}, nil
+	answer, grokSrc := sources.Split(content)
+	result := &Result{Content: answer, Model: model, Sources: sources.Merge(grokSrc, refSrc)}
+	if len(refFailures) > 0 {
+		result.Warning = formatRefFailures(refFailures)
+	}
+	return result, nil
+}
+
+// formatRefFailures renders non-fatal extra_sources tier failures into one
+// visible warning line, deduplicating provider names.
+func formatRefFailures(failures []refsource.Failure) string {
+	seen := make(map[string]struct{})
+	var names []string
+	for _, f := range failures {
+		if _, dup := seen[f.Provider]; dup {
+			continue
+		}
+		seen[f.Provider] = struct{}{}
+		names = append(names, f.Provider)
+	}
+	sort.Strings(names)
+	return fmt.Sprintf("extra_sources requested but %s search failed; the Grok answer is unaffected", strings.Join(names, "/"))
 }
 
 func buildUserContent(query, platform string) string {

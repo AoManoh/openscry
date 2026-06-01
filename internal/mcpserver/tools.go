@@ -38,6 +38,10 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 					Type:        "string",
 					Description: "Optional per-call model override. Defaults to the server's configured GROK_MODEL (user-supplied; there is no built-in default, and an unavailable model fails explicitly).",
 				},
+				"extra_sources": {
+					Type:        "integer",
+					Description: "Number of additional reference sources to fetch from Tavily/Firecrawl search, merged into the answer's citations. 0 (default) disables it; a no-op when no Tavily/Firecrawl key is configured.",
+				},
 			},
 			Required:             []string{"query"},
 			AdditionalProperties: false,
@@ -50,9 +54,10 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 		model, _ := args["model"].(string)
 
 		res, err := svc.Search(ctx, search.Request{
-			Query:    query,
-			Platform: platform,
-			Model:    model,
+			Query:        query,
+			Platform:     platform,
+			Model:        model,
+			ExtraSources: parseIntArg(args, "extra_sources", 0),
 		})
 		if err != nil {
 			return nil, err
@@ -61,6 +66,9 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 		// citation list regardless of how the upstream formatted them. When
 		// the answer carried no citations the text is returned unchanged.
 		text := res.Content
+		if res.Warning != "" {
+			text += "\n\n> warning: " + res.Warning
+		}
 		if len(res.Sources) > 0 {
 			var b strings.Builder
 			b.WriteString(text)

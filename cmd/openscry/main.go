@@ -27,10 +27,23 @@ import (
 	"github.com/AoManoh/openscry/internal/mapper"
 	"github.com/AoManoh/openscry/internal/mcpserver"
 	"github.com/AoManoh/openscry/internal/planner"
+	"github.com/AoManoh/openscry/internal/refsource"
 	"github.com/AoManoh/openscry/internal/search"
 )
 
 const version = mcpserver.ServerVersion
+
+// newRefProvider builds the extra_sources reference provider from config. It
+// is always constructed; refsource.Provider.Available() is false (and the
+// fan-out a no-op) when neither Tavily nor Firecrawl key is set.
+func newRefProvider(cfg *config.Config) *refsource.Provider {
+	return refsource.New(refsource.Options{
+		TavilyAPIKey:    cfg.TavilyAPIKey,
+		TavilyAPIURL:    cfg.TavilyAPIURL,
+		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
+		FirecrawlAPIURL: cfg.FirecrawlAPIURL,
+	})
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -80,8 +93,8 @@ environment:
   GROK_FETCH_FALLBACK   optional, full|strict (default full; strict disables web_fetch's basic-HTTP fallback)
   GROK_CONCURRENCY      optional, MCP worker pool size (default 8)
   GROK_QUEUE_SIZE       optional, MCP request queue size (default 64)
-  TAVILY_API_KEY        optional, enables the Tavily extract tier in web_fetch
-  FIRECRAWL_API_KEY     optional, enables the Firecrawl scrape tier in web_fetch
+  TAVILY_API_KEY        optional, enables Tavily tiers (web_fetch extract, web_map, web_search extra_sources)
+  FIRECRAWL_API_KEY     optional, enables Firecrawl tiers (web_fetch scrape, web_search extra_sources)
 `)
 }
 
@@ -89,6 +102,7 @@ func runSearch(args []string) int {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	model := fs.String("model", "", "per-call model override (default: the configured $GROK_MODEL)")
 	platform := fs.String("platform", "", "platform focus (e.g. GitHub, Reddit)")
+	extraSources := fs.Int("extra-sources", 0, "extra reference sources from Tavily/Firecrawl search (0 disables)")
 	timeout := fs.Duration("timeout", 0, "request timeout override (e.g. 60s); 0 uses the config default")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -109,7 +123,10 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 
 	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
 	provider := config.ResolveSearchProvider(cfg.SearchProvider, cfg.APIBaseURL)
-	svc := search.NewWithOptions(client, cfg.Model, search.Options{Provider: provider})
+	svc := search.NewWithOptions(client, cfg.Model, search.Options{
+		Provider:    provider,
+		RefProvider: newRefProvider(cfg),
+	})
 
 	to := cfg.RequestTimeout
 	if *timeout > 0 {
@@ -118,12 +135,15 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 	ctx, cancel := context.WithTimeout(context.Background(), to)
 	defer cancel()
 
-	res, err := svc.Search(ctx, search.Request{Query: query, Platform: *platform, Model: *model})
+	res, err := svc.Search(ctx, search.Request{Query: query, Platform: *platform, Model: *model, ExtraSources: *extraSources})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "search failed:", err)
 		return 1
 	}
 	fmt.Println(res.Content)
+	if res.Warning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", res.Warning)
+	}
 	// Sources go to stderr so stdout stays clean for piping the answer.
 	if len(res.Sources) > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d sources:\n", len(res.Sources))
@@ -155,7 +175,10 @@ func runMCP(args []string) int {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
 	provider := config.ResolveSearchProvider(cfg.SearchProvider, cfg.APIBaseURL)
-	searchSvc := search.NewWithOptions(client, cfg.Model, search.Options{Provider: provider})
+	searchSvc := search.NewWithOptions(client, cfg.Model, search.Options{
+		Provider:    provider,
+		RefProvider: newRefProvider(cfg),
+	})
 	fetchSvc := fetch.New(client, fetch.Options{
 		Model:           cfg.Model,
 		Strict:          cfg.FetchFallback == "strict",
