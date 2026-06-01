@@ -132,7 +132,7 @@ func TestMapTavilyTierWins(t *testing.T) {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"urls": []string{"https://example.com/", "https://example.com/page1", "https://example.com/page2"},
+			"results": []string{"https://example.com/", "https://example.com/page1", "https://example.com/page2"},
 		})
 	}))
 	defer tavilySrv.Close()
@@ -153,7 +153,7 @@ func TestMapTavilyTierWins(t *testing.T) {
 func TestMapTavilyFallsToHTTP(t *testing.T) {
 	// Tavily returns empty → should fall to HTTP tier.
 	tavilySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"urls": []string{}})
+		json.NewEncoder(w).Encode(map[string]any{"results": []string{}})
 	}))
 	defer tavilySrv.Close()
 

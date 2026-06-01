@@ -50,7 +50,7 @@ const (
 	// Default extractor endpoints for the optional web_fetch fallback chain.
 	// They are only used when the corresponding API key is configured.
 	DefaultTavilyURL    = "https://api.tavily.com"
-	DefaultFirecrawlURL = "https://api.firecrawl.dev"
+	DefaultFirecrawlURL = "https://api.firecrawl.dev/v1"
 )
 
 // Config holds the resolved runtime configuration.

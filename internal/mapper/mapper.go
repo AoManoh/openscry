@@ -158,10 +158,15 @@ func (s *Service) tavilyMap(ctx context.Context, target string, req Request) ([]
 	}
 
 	var out struct {
-		URLs []string `json:"urls"`
+		Results []string `json:"results"` // Tavily /map 实际返回字段
+		URLs    []string `json:"urls"`    // 兼容旧契约/其他实现
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
+	}
+	// Tavily /map 返回 results；保留 urls 兼容
+	if len(out.Results) > 0 {
+		return out.Results, nil
 	}
 	return out.URLs, nil
 }
