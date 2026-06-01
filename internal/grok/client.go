@@ -116,6 +116,31 @@ func (c *Client) Complete(ctx context.Context, model, systemPrompt, userContent 
 	return content, nil
 }
 
+// Ping checks upstream reachability with a lightweight GET {base}/models. It
+// tests the network path, not endpoint correctness: any HTTP response (even a
+// 404) means the server is reachable and returns nil; only a transport-level
+// failure (DNS, connection refused, timeout) is reported as an error. It is
+// used by the HTTP /ready endpoint and the get_config_info diagnostic, neither
+// of which should depend on grok2api exposing a specific /models contract.
+func (c *Client) Ping(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok && c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
+	if err != nil {
+		return &Error{Code: CodeConnect, Message: fmt.Sprintf("build request: %v", err)}
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return classifyTransportError(ctx, err)
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // parseSSE accumulates `data:` delta content from an OpenAI-style SSE
 // stream until [DONE] or EOF. Unparsable keepalive lines are ignored;
 // an explicit error object in the stream is surfaced.

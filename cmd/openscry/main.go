@@ -82,7 +82,9 @@ usage:
   openscry fetch  [--timeout D] <url>
   openscry map    [--depth N] [--breadth N] [--limit N] [--instructions S] [--timeout D] <url>
   openscry plan   [--timeout D] "your research question"
-  openscry mcp        run the thin MCP adapter over stdio (tools: web_search, web_fetch, web_map, research_plan)
+  openscry mcp [--http :8080]  run the MCP adapter over stdio (default) or HTTP JSON-RPC
+                               tools: web_search, web_fetch, web_map, research_plan, web_search_batch,
+                               submit/get/cancel/list_search_tasks, get_config_info
   openscry version    print version
 
 environment:
@@ -94,6 +96,8 @@ environment:
   GROK_FETCH_FALLBACK   optional, full|strict (default full; strict disables web_fetch's basic-HTTP fallback)
   GROK_CONCURRENCY      optional, MCP worker pool size (default 8)
   GROK_QUEUE_SIZE       optional, MCP request queue size (default 64)
+  GROK_HTTP_ADDR        optional, serve MCP over HTTP at this address (e.g. :8080); --http overrides it
+  GROK_HTTP_API_KEY     required for HTTP, bearer token clients must present (Authorization or X-API-Key)
   TAVILY_API_KEY        optional, enables Tavily tiers (web_fetch extract, web_map, web_search extra_sources)
   FIRECRAWL_API_KEY     optional, enables Firecrawl tiers (web_fetch scrape, web_search extra_sources)
 `)
@@ -161,6 +165,7 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 
 func runMCP(args []string) int {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	httpAddr := fs.String("http", "", "serve MCP over HTTP at this address (e.g. :8080) instead of stdio; overrides GROK_HTTP_ADDR")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -213,6 +218,34 @@ func runMCP(args []string) int {
 	srv.Register(mcpserver.CancelSearchTaskTool(taskStore))
 	srv.Register(mcpserver.ListSearchTasksTool(taskStore))
 
+	// Resolve the transport: the --http flag overrides GROK_HTTP_ADDR; empty
+	// means stdio.
+	addr := strings.TrimSpace(*httpAddr)
+	if addr == "" {
+		addr = cfg.HTTPAddr
+	}
+	transport := "stdio"
+	if addr != "" {
+		transport = "http"
+	}
+
+	info := mcpserver.ConfigInfo{
+		Name:           mcpserver.ServerName,
+		Version:        version,
+		Protocol:       mcpserver.MCPProtocolVersion,
+		Transport:      transport,
+		Model:          cfg.Model,
+		BaseURL:        cfg.APIBaseURL,
+		Provider:       provider,
+		FetchFallback:  cfg.FetchFallback,
+		RequestTimeout: cfg.RequestTimeout.String(),
+		Concurrency:    cfg.Concurrency,
+		QueueSize:      cfg.QueueSize,
+		Tavily:         cfg.TavilyAPIKey != "",
+		Firecrawl:      cfg.FirecrawlAPIKey != "",
+	}
+	srv.Register(mcpserver.GetConfigInfoTool(info, client.Ping))
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sig := make(chan os.Signal, 1)
@@ -226,11 +259,28 @@ func runMCP(args []string) int {
 	logger.Info("openscry.mcp_serving",
 		"model", cfg.Model, "base_url", cfg.APIBaseURL,
 		"provider", provider, "fetch_fallback", cfg.FetchFallback,
-		"tools", "web_search,web_fetch,web_map,research_plan,web_search_batch,submit_search_task,get_search_task_result,cancel_search_task,list_search_tasks",
+		"transport", transport,
+		"tools", "web_search,web_fetch,web_map,research_plan,web_search_batch,submit_search_task,get_search_task_result,cancel_search_task,list_search_tasks,get_config_info",
 		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
 		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize)
-	if err := srv.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error("openscry.serve_ended", "err", err.Error())
+
+	var serveErr error
+	if transport == "http" {
+		if cfg.HTTPAPIKey == "" {
+			fmt.Fprintln(os.Stderr, "config error: GROK_HTTP_API_KEY is required when serving over HTTP (refusing an unauthenticated /mcp endpoint)")
+			return 1
+		}
+		serveErr = srv.ServeHTTP(ctx, mcpserver.HTTPOptions{
+			Addr:           addr,
+			APIKey:         cfg.HTTPAPIKey,
+			ReadinessProbe: client.Ping,
+			ConfigInfo:     info.Map(),
+		})
+	} else {
+		serveErr = srv.Serve(ctx)
+	}
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+		logger.Error("openscry.serve_ended", "err", serveErr.Error())
 		return 1
 	}
 	return 0

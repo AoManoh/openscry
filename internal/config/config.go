@@ -77,6 +77,14 @@ type Config struct {
 	TavilyAPIURL    string // TAVILY_API_URL (default DefaultTavilyURL)
 	FirecrawlAPIKey string // FIRECRAWL_API_KEY
 	FirecrawlAPIURL string // FIRECRAWL_API_URL (default DefaultFirecrawlURL)
+
+	// Optional HTTP transport for the MCP server. When HTTPAddr is set (env
+	// or the `mcp --http` flag) the server serves JSON-RPC over HTTP instead
+	// of stdio. HTTPAPIKey is the bearer token clients must present; it is
+	// mandatory for HTTP serving (we never expose an unauthenticated network
+	// endpoint) and is distinct from APIKey (the upstream grok2api key).
+	HTTPAddr   string // GROK_HTTP_ADDR (e.g. ":8080"); empty = stdio
+	HTTPAPIKey string // GROK_HTTP_API_KEY — required when serving over HTTP
 }
 
 // Load reads configuration from the environment and validates it.
@@ -95,6 +103,8 @@ func Load() (*Config, error) {
 		TavilyAPIURL:    firstNonEmpty(strings.TrimSpace(os.Getenv("TAVILY_API_URL")), DefaultTavilyURL),
 		FirecrawlAPIKey: strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")),
 		FirecrawlAPIURL: firstNonEmpty(strings.TrimSpace(os.Getenv("FIRECRAWL_API_URL")), DefaultFirecrawlURL),
+		HTTPAddr:        strings.TrimSpace(os.Getenv("GROK_HTTP_ADDR")),
+		HTTPAPIKey:      strings.TrimSpace(os.Getenv("GROK_HTTP_API_KEY")),
 	}
 
 	if raw := strings.TrimSpace(os.Getenv("GROK_REQUEST_TIMEOUT")); raw != "" {
