@@ -291,6 +291,9 @@ usage: openscry map [--depth N] [--breadth N] [--limit N] [--instructions S] [--
 	}
 
 	fmt.Fprintf(os.Stderr, "mapped via tier=%s, found %d URLs\n", res.Tier, len(res.URLs))
+	if res.Warning != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", res.Warning)
+	}
 	for _, u := range res.URLs {
 		fmt.Println(u)
 	}

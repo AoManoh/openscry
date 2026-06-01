@@ -81,6 +81,7 @@ type Result struct {
 	RootURL string   // the root URL as requested
 	URLs    []string // discovered URLs (deduplicated)
 	Tier    string   // which tier produced results: "tavily" or "http"
+	Warning string   // non-empty when degradation occurred (e.g. instructions not honored)
 }
 
 // Map discovers the URL structure of a site starting at req.URL. It tries
@@ -105,7 +106,9 @@ func (s *Service) Map(ctx context.Context, req Request) (*Result, error) {
 	req = req.normalized()
 
 	// Tier 1: Tavily /map (when key is configured).
+	tavilyAttempted := false
 	if s.tavilyKey != "" {
+		tavilyAttempted = true
 		urls, err := s.tavilyMap(ctx, target, req)
 		if err == nil && len(urls) > 0 {
 			return &Result{RootURL: target, URLs: urls, Tier: "tavily"}, nil
@@ -124,7 +127,20 @@ func (s *Service) Map(ctx context.Context, req Request) (*Result, error) {
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("mapper: no URLs discovered for %s", target)
 	}
-	return &Result{RootURL: target, URLs: urls, Tier: "http"}, nil
+
+	// Degradation visibility: if instructions were provided but we fell to
+	// the HTTP tier (which cannot filter), the user must know their filter
+	// was not honored. This satisfies AGENTS.md §10.1 and the openscry
+	// "degradation is visible" principle.
+	var warning string
+	if req.Instructions != "" {
+		if tavilyAttempted {
+			warning = "instructions provided but Tavily returned empty results; fell back to HTTP BFS which does not support filtering — results are unfiltered"
+		} else {
+			warning = "instructions provided but no Tavily API key configured; HTTP BFS does not support filtering — results are unfiltered"
+		}
+	}
+	return &Result{RootURL: target, URLs: urls, Tier: "http", Warning: warning}, nil
 }
 
 // tavilyMap calls Tavily's /map endpoint.

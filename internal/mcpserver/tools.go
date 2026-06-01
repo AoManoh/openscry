@@ -188,12 +188,16 @@ func WebMapTool(svc *mapper.Service) (Tool, ToolHandler) {
 			return nil, err
 		}
 
-		out, _ := json.Marshal(map[string]any{
+		result := map[string]any{
 			"root_url": res.RootURL,
 			"tier":     res.Tier,
 			"count":    len(res.URLs),
 			"urls":     res.URLs,
-		})
+		}
+		if res.Warning != "" {
+			result["warning"] = res.Warning
+		}
+		out, _ := json.Marshal(result)
 		return &ToolCallResult{
 			Content: []ContentItem{{Type: "text", Text: string(out)}},
 		}, nil

@@ -230,3 +230,78 @@ func TestMapRootUnreachableFails(t *testing.T) {
 		t.Fatalf("expected fail-loud when the root page is unreachable, got URLs=%v", res.URLs)
 	}
 }
+
+func TestMapInstructionsWarningWhenTavilyEmpty(t *testing.T) {
+	// Tavily returns empty results (instructions filter yields nothing) →
+	// HTTP BFS wins but Warning must be set (degradation visible).
+	tavilySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"results": []string{}})
+	}))
+	defer tavilySrv.Close()
+	htmlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<html><body><a href="/page">page</a></body></html>`)
+	}))
+	defer htmlSrv.Close()
+
+	svc := New(Options{TavilyAPIKey: "test-key", TavilyAPIURL: tavilySrv.URL})
+	res, err := svc.Map(context.Background(), Request{
+		URL:          htmlSrv.URL,
+		MaxDepth:     1,
+		Instructions: "only API docs",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Tier != "http" {
+		t.Fatalf("tier=%q want http", res.Tier)
+	}
+	if res.Warning == "" {
+		t.Fatal("expected Warning to be set when instructions are not honored by HTTP tier")
+	}
+	if !strings.Contains(res.Warning, "unfiltered") {
+		t.Fatalf("Warning should mention 'unfiltered', got: %q", res.Warning)
+	}
+}
+
+func TestMapNoWarningWithoutInstructions(t *testing.T) {
+	// Without instructions, HTTP tier result has no warning.
+	htmlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<html><body><a href="/a">a</a></body></html>`)
+	}))
+	defer htmlSrv.Close()
+
+	svc := New(Options{})
+	res, err := svc.Map(context.Background(), Request{URL: htmlSrv.URL, MaxDepth: 1})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Warning != "" {
+		t.Fatalf("expected no Warning without instructions, got: %q", res.Warning)
+	}
+}
+
+func TestMapNoWarningWhenTavilyHonorsInstructions(t *testing.T) {
+	// When Tavily returns non-empty results with instructions → no warning.
+	tavilySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []string{"https://example.com/docs/api"},
+		})
+	}))
+	defer tavilySrv.Close()
+
+	svc := New(Options{TavilyAPIKey: "test-key", TavilyAPIURL: tavilySrv.URL})
+	res, err := svc.Map(context.Background(), Request{
+		URL:          "https://example.com",
+		MaxDepth:     1,
+		Instructions: "only API docs",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Tier != "tavily" {
+		t.Fatalf("tier=%q want tavily", res.Tier)
+	}
+	if res.Warning != "" {
+		t.Fatalf("expected no Warning when Tavily honors instructions, got: %q", res.Warning)
+	}
+}
