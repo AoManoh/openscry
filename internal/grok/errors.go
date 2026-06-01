@@ -3,6 +3,7 @@ package grok
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Code classifies an upstream failure so callers (and ultimately the AI
@@ -40,6 +41,11 @@ type Error struct {
 	Message   string
 	Status    int  // HTTP status when applicable; 0 otherwise
 	Retryable bool // hint for the resilience layer (retry/breaker classification)
+	// RetryAfter carries the upstream's Retry-After hint (parsed from the
+	// response header) on a 429/503. Zero means "no hint"; the resilience
+	// layer honors it as the backoff delay instead of blind exponential
+	// backoff so we do not retry while still throttled.
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string {

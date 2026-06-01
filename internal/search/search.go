@@ -82,6 +82,7 @@ func NewWithOptions(client *grok.Client, defaultModel string, opt Options) *Serv
 			BaseDelay:   baseDelay,
 			Jitter:      true,
 			IsRetryable: isRetryable,
+			RetryAfter:  retryAfterHint,
 			Budget:      resilience.NewRetryBudget(burst, refill),
 		},
 	}
@@ -165,6 +166,16 @@ func buildUserContent(query, platform string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// retryAfterHint extracts a grok 429/503 Retry-After hint so the resilience
+// layer can honor the upstream's requested delay instead of blind backoff.
+// Returns (0, false) when the error carries no hint.
+func retryAfterHint(err error) (time.Duration, bool) {
+	if ge, ok := grok.AsError(err); ok && ge.RetryAfter > 0 {
+		return ge.RetryAfter, true
+	}
+	return 0, false
 }
 
 // isRetryable reports whether err warrants a retry. A circuit-open error is

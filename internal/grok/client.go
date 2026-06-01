@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -101,7 +102,7 @@ func (c *Client) Complete(ctx context.Context, model, systemPrompt, userContent 
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", classifyStatusError(resp.StatusCode, string(body))
+		return "", classifyStatusError(resp.StatusCode, string(body), resp.Header.Get("Retry-After"))
 	}
 
 	content, err := parseSSE(ctx, resp.Body)
@@ -162,21 +163,45 @@ func classifyTransportError(ctx context.Context, err error) error {
 	}
 }
 
-func classifyStatusError(status int, body string) error {
+func classifyStatusError(status int, body, retryAfter string) error {
 	snippet := strings.TrimSpace(body)
 	if len(snippet) > 500 {
 		snippet = snippet[:500]
 	}
+	ra := parseRetryAfter(retryAfter)
 	switch {
 	case status == http.StatusTooManyRequests:
-		return &Error{Code: CodeRateLimit, Status: status, Message: "rate limited: " + snippet, Retryable: true}
+		return &Error{Code: CodeRateLimit, Status: status, Message: "rate limited: " + snippet, Retryable: true, RetryAfter: ra}
 	case status == http.StatusBadRequest || status == http.StatusNotFound:
 		return &Error{Code: CodeModelUnavailable, Status: status, Message: "model or request rejected: " + snippet}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return &Error{Code: CodeUpstreamStatus, Status: status, Message: "auth error: " + snippet}
 	case status >= 500:
-		return &Error{Code: CodeUpstreamStatus, Status: status, Message: "upstream server error: " + snippet, Retryable: true}
+		return &Error{Code: CodeUpstreamStatus, Status: status, Message: "upstream server error: " + snippet, Retryable: true, RetryAfter: ra}
 	default:
 		return &Error{Code: CodeUpstreamStatus, Status: status, Message: "unexpected status: " + snippet}
 	}
+}
+
+// parseRetryAfter parses an HTTP Retry-After header value, which may be either
+// a non-negative integer number of seconds or an HTTP-date. It returns 0 when
+// the header is absent or unparsable (the resilience layer then falls back to
+// its normal exponential backoff).
+func parseRetryAfter(value string) time.Duration {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }

@@ -39,6 +39,12 @@ type RetryOptions struct {
 	// OnRetry is an optional observability hook fired before each backoff
 	// sleep.
 	OnRetry func(attempt int, err error, delay time.Duration)
+	// RetryAfter, when non-nil, extracts a server-requested delay from the
+	// error (e.g. an HTTP Retry-After hint). When it returns (d, true) with
+	// d > 0, that delay is honored instead of the computed exponential
+	// backoff (so we do not retry while still throttled), bounded by
+	// maxRetryAfter. A nil extractor falls back to normal backoff.
+	RetryAfter func(error) (time.Duration, bool)
 
 	// now / sleep are injectable for deterministic tests. nil uses the
 	// wall clock / a real ctx-aware sleep.
@@ -109,6 +115,17 @@ func Retry[T any](ctx context.Context, opts RetryOptions, op func(context.Contex
 		}
 
 		delay := backoffDelay(attempt, opts)
+		// A server-requested Retry-After hint wins over our guess: blind
+		// backoff (sub-second to seconds) would retry while still throttled.
+		// The hint is bounded by maxRetryAfter and the outer ctx deadline.
+		if opts.RetryAfter != nil {
+			if d, ok := opts.RetryAfter(err); ok && d > 0 {
+				if d > maxRetryAfter {
+					d = maxRetryAfter
+				}
+				delay = d
+			}
+		}
 		if opts.OnRetry != nil {
 			opts.OnRetry(attempt, err, delay)
 		}
@@ -121,6 +138,13 @@ func Retry[T any](ctx context.Context, opts RetryOptions, op func(context.Contex
 	}
 	return zero, lastErr
 }
+
+// maxRetryAfter caps how long a server-requested Retry-After hint can stall a
+// retry. It is deliberately larger than the default MaxDelay (which bounds
+// blind backoff) because an explicit upstream throttle signal warrants a
+// longer, honored wait — still bounded so a pathological header cannot hang
+// the call, and the outer per-operation ctx deadline bounds it further.
+const maxRetryAfter = 60 * time.Second
 
 // backoffDelay computes the delay before the next retry. attempt is
 // 1-based, so the first backoff uses exponent 0 (== BaseDelay).
