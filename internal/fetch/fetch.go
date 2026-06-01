@@ -163,6 +163,13 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	// page's structured Markdown). Reuses the shared streaming primitive.
 	if s.client != nil {
 		content, err := s.client.Complete(extractorCtx, s.model, prompt.FetchPrompt, prompt.FetchUserContent(target))
+		if err == nil && strings.Contains(content, prompt.FetchFailureSentinel) {
+			// The model signalled it could not retrieve the page (see
+			// prompt.FetchFailureSentinel). Treat this as a tier failure so
+			// the chain falls through to basic-HTTP (full) or fails loud
+			// (strict), rather than accepting failure-narration as content.
+			err = fmt.Errorf("grok tier: model reported page unavailable")
+		}
 		if err == nil && strings.TrimSpace(content) != "" {
 			return &Result{URL: target, Content: content, Tier: "grok", Model: s.model}, nil
 		}

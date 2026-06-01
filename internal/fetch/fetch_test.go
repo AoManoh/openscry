@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/AoManoh/openscry/internal/grok"
+	"github.com/AoManoh/openscry/internal/prompt"
 )
 
 // sseContent renders a minimal OpenAI-style SSE body carrying one content
@@ -233,5 +234,47 @@ func TestFetchStrictDisablesBasicHTTP(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "http:") {
 		t.Fatalf("strict mode should not have tried the http tier, got: %v", err)
+	}
+}
+
+func TestFetchGrokFailureSentinelFallsThrough(t *testing.T) {
+	// Regression: when the Grok tier returns the failure sentinel (the model
+	// could not retrieve the page), full mode must NOT accept it as content;
+	// the chain falls through to the basic-HTTP last resort.
+	grokSentinel := newSSEServer(t, prompt.FetchFailureSentinel)
+	defer grokSentinel.Close()
+	htmlSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html><head><title>Real</title></head><body><p>real page content</p></body></html>"))
+	}))
+	defer htmlSrv.Close()
+
+	svc := New(grok.NewClient(grokSentinel.URL, "k", 5*time.Second), Options{Model: "m"})
+	res, err := svc.Fetch(context.Background(), htmlSrv.URL)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Tier != "http" {
+		t.Fatalf("tier=%q want http (grok sentinel must not win)", res.Tier)
+	}
+	if !strings.Contains(res.Content, "real page content") {
+		t.Fatalf("content=%q", res.Content)
+	}
+}
+
+func TestFetchGrokFailureSentinelStrictFailsLoud(t *testing.T) {
+	// Regression: in strict mode the basic-HTTP fallback is disabled, so a
+	// Grok sentinel (page unavailable) must fail loud rather than be accepted
+	// as content.
+	grokSentinel := newSSEServer(t, prompt.FetchFailureSentinel)
+	defer grokSentinel.Close()
+
+	svc := New(grok.NewClient(grokSentinel.URL, "k", 5*time.Second), Options{Model: "m", Strict: true})
+	_, err := svc.Fetch(context.Background(), "https://example.com/page")
+	if err == nil {
+		t.Fatal("expected fail-loud when grok signals unavailable in strict mode")
+	}
+	if !strings.Contains(err.Error(), "strict") {
+		t.Fatalf("error should mention strict mode, got: %v", err)
 	}
 }

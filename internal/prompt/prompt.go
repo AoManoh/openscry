@@ -45,6 +45,15 @@ func TimeContext() string {
 		now.Format("2006-01-02 15:04:05 -07:00"), now.Weekday().String())
 }
 
+// FetchFailureSentinel is the exact token the model is instructed to emit when
+// it cannot retrieve the target page (DNS failure, 404, timeout, access
+// denied, ...). The fetch Grok tier treats a response containing this token as
+// a tier failure -- so the chain falls through to the basic-HTTP last resort
+// (full mode) or fails loud (strict mode) -- instead of accepting the model's
+// failure narration as if it were page content. This failure-signal contract
+// is an openscry addition beyond the Python baseline.
+const FetchFailureSentinel = "OPENSCRY_FETCH_UNAVAILABLE"
+
 // FetchPrompt steers the model to fetch a URL and return its content as
 // faithful, structured Markdown (no summarization). Ported from the Python
 // baseline (grok_search/utils.py:fetch_prompt); the original's check/cross
@@ -86,6 +95,11 @@ const FetchPrompt = "# Profile: Web Content Fetcher\n\n" +
 	"### 2. 输出质量要求\n" +
 	"- 元数据头部包含 source（原始 URL）、title（网页标题）、fetched_at（抓取时间）\n" +
 	"- 编码统一使用 UTF-8；输出可直接用于文档生成或阅读\n\n" +
+	"### 3. 抓取失败处理（核心）\n" +
+	"- 如果无法获取目标网页的真实内容（域名解析失败、页面不存在/404、超时、被拒绝访问，或任何原因导致无法取得真实页面内容），\n" +
+	"  必须只输出以下标记本身，不要附加任何解释、道歉、推测或占位内容：\n" +
+	"  " + FetchFailureSentinel + "\n" +
+	"- 严禁在无法真正获取页面时编造或想象网页内容。\n\n" +
 	"---\n\n" +
 	"## Initialization\n\n" +
 	"当接收到 URL 时：\n" +

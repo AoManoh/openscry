@@ -213,3 +213,20 @@ func TestMapRespectsContextTimeout(t *testing.T) {
 		t.Fatalf("expected at most 2 URLs under timeout, got %d: %v", len(res.URLs), res.URLs)
 	}
 }
+
+func TestMapRootUnreachableFails(t *testing.T) {
+	// Regression: when the root page itself is unreachable (here: HTTP 500 on
+	// every path, so root link extraction fails), the crawl must fail loud
+	// instead of returning the seed URL alone as a successful result.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom"))
+	}))
+	defer srv.Close()
+
+	svc := New(Options{})
+	res, err := svc.Map(context.Background(), Request{URL: srv.URL, MaxDepth: 1})
+	if err == nil {
+		t.Fatalf("expected fail-loud when the root page is unreachable, got URLs=%v", res.URLs)
+	}
+}

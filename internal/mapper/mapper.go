@@ -192,7 +192,13 @@ func (s *Service) httpCrawl(ctx context.Context, root *url.URL, req Request) ([]
 
 		links, err := s.extractLinks(ctx, cur.u)
 		if err != nil {
-			continue // non-fatal: skip unreachable pages
+			// The root being unreachable is fatal: a crawl that discovered
+			// nothing beyond the seed is a failure, not a success. Deeper
+			// pages remain best-effort and are skipped on error.
+			if cur.depth == 0 {
+				return nil, fmt.Errorf("root page unreachable: %w", err)
+			}
+			continue // non-fatal: skip unreachable child pages
 		}
 
 		added := 0
