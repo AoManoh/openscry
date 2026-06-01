@@ -15,6 +15,7 @@ import (
 	"github.com/AoManoh/openscry/internal/grok"
 	"github.com/AoManoh/openscry/internal/prompt"
 	"github.com/AoManoh/openscry/internal/resilience"
+	"github.com/AoManoh/openscry/internal/sources"
 )
 
 // Service performs web searches against a grok2api endpoint. It owns the
@@ -93,10 +94,14 @@ type Request struct {
 	Model    string // optional per-call model override
 }
 
-// Result is a successful search result.
+// Result is a successful search result. Content is the answer with any
+// trailing sources block removed; Sources is the normalized citation list
+// extracted from the upstream answer (see internal/sources). Sources is nil
+// when the answer carried no recognizable citations.
 type Result struct {
 	Content string
 	Model   string
+	Sources []sources.Source
 }
 
 // Search executes one web search through the resilience layer. The model is
@@ -142,7 +147,11 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Result{Content: content, Model: model}, nil
+	// Separate the answer from its citations and normalize heterogeneous
+	// upstream source formats into one consistent list. When no citations are
+	// present, answer == content and Sources is nil (no behavior change).
+	answer, src := sources.Split(content)
+	return &Result{Content: answer, Model: model, Sources: src}, nil
 }
 
 func buildUserContent(query, platform string) string {

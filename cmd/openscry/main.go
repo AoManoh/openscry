@@ -124,6 +124,17 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 		return 1
 	}
 	fmt.Println(res.Content)
+	// Sources go to stderr so stdout stays clean for piping the answer.
+	if len(res.Sources) > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d sources:\n", len(res.Sources))
+		for i, s := range res.Sources {
+			if s.Title != "" {
+				fmt.Fprintf(os.Stderr, "  [%d] %s — %s\n", i+1, s.Title, s.URL)
+			} else {
+				fmt.Fprintf(os.Stderr, "  [%d] %s\n", i+1, s.URL)
+			}
+		}
+	}
 	return 0
 }
 

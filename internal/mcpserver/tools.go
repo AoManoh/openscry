@@ -57,8 +57,25 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 		if err != nil {
 			return nil, err
 		}
+		// Append a normalized Sources section so the agent gets a consistent
+		// citation list regardless of how the upstream formatted them. When
+		// the answer carried no citations the text is returned unchanged.
+		text := res.Content
+		if len(res.Sources) > 0 {
+			var b strings.Builder
+			b.WriteString(text)
+			b.WriteString(fmt.Sprintf("\n\n---\n**Sources (%d):**\n", len(res.Sources)))
+			for i, s := range res.Sources {
+				if s.Title != "" {
+					b.WriteString(fmt.Sprintf("%d. [%s](%s)\n", i+1, s.Title, s.URL))
+				} else {
+					b.WriteString(fmt.Sprintf("%d. %s\n", i+1, s.URL))
+				}
+			}
+			text = b.String()
+		}
 		return &ToolCallResult{
-			Content: []ContentItem{{Type: "text", Text: res.Content}},
+			Content: []ContentItem{{Type: "text", Text: text}},
 		}, nil
 	}
 
