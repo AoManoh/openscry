@@ -82,9 +82,10 @@ usage:
   openscry fetch  [--timeout D] <url>
   openscry map    [--depth N] [--breadth N] [--limit N] [--instructions S] [--timeout D] <url>
   openscry plan   [--timeout D] "your research question"
-  openscry mcp [--http :8080]  run the MCP adapter over stdio (default) or HTTP JSON-RPC
-                               tools: web_search, web_fetch, web_map, research_plan, web_search_batch,
-                               submit/get/cancel/list_search_tasks, get_config_info
+  openscry mcp [--http :8080] [--tools core|all]  run the MCP adapter over stdio (default) or HTTP
+                               core (default): web_search, web_fetch, web_map, research_plan,
+                                               web_search_batch, get_config_info
+                               all: core + async submit/get/cancel/list_search_tasks
   openscry version    print version
 
 environment:
@@ -98,6 +99,7 @@ environment:
   GROK_QUEUE_SIZE       optional, MCP request queue size (default 64)
   GROK_HTTP_ADDR        optional, serve MCP over HTTP at this address (e.g. :8080); --http overrides it
   GROK_HTTP_API_KEY     required for HTTP, bearer token clients must present (Authorization or X-API-Key)
+  GROK_MCP_TOOLS        optional, core|all (default core; all adds async task tools); --tools overrides it
   TAVILY_API_KEY        optional, enables Tavily tiers (web_fetch extract, web_map, web_search extra_sources)
   FIRECRAWL_API_KEY     optional, enables Firecrawl tiers (web_fetch scrape, web_search extra_sources)
 `)
@@ -166,6 +168,7 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 func runMCP(args []string) int {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	httpAddr := fs.String("http", "", "serve MCP over HTTP at this address (e.g. :8080) instead of stdio; overrides GROK_HTTP_ADDR")
+	toolsFlag := fs.String("tools", "", "advertised tool set: core (default) or all (adds async task tools); overrides GROK_MCP_TOOLS")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -205,18 +208,16 @@ func runMCP(args []string) int {
 
 	planSvc := planner.New(client, planner.Options{Model: cfg.Model})
 
-	// Process-level async task store backing the submit/get/cancel/list tools.
-	taskStore := tasks.NewStore()
-
-	srv.Register(mcpserver.WebSearchTool(searchSvc))
-	srv.Register(mcpserver.WebFetchTool(fetchSvc))
-	srv.Register(mcpserver.WebMapTool(mapSvc))
-	srv.Register(mcpserver.ResearchPlanTool(planSvc))
-	srv.Register(mcpserver.WebSearchBatchTool(searchSvc))
-	srv.Register(mcpserver.SubmitSearchTaskTool(taskStore, searchSvc))
-	srv.Register(mcpserver.GetSearchTaskResultTool(taskStore))
-	srv.Register(mcpserver.CancelSearchTaskTool(taskStore))
-	srv.Register(mcpserver.ListSearchTasksTool(taskStore))
+	// Resolve the advertised tool set: --tools overrides GROK_MCP_TOOLS.
+	toolset := cfg.MCPTools
+	if strings.TrimSpace(*toolsFlag) != "" {
+		v, terr := config.NormalizeToolset(*toolsFlag)
+		if terr != nil {
+			fmt.Fprintln(os.Stderr, "config error:", terr)
+			return 1
+		}
+		toolset = v
+	}
 
 	// Resolve the transport: the --http flag overrides GROK_HTTP_ADDR; empty
 	// means stdio.
@@ -228,6 +229,13 @@ func runMCP(args []string) int {
 	if addr != "" {
 		transport = "http"
 	}
+
+	// Core tools: the request/response surface every agent drives.
+	srv.Register(mcpserver.WebSearchTool(searchSvc))
+	srv.Register(mcpserver.WebFetchTool(fetchSvc))
+	srv.Register(mcpserver.WebMapTool(mapSvc))
+	srv.Register(mcpserver.ResearchPlanTool(planSvc))
+	srv.Register(mcpserver.WebSearchBatchTool(searchSvc))
 
 	info := mcpserver.ConfigInfo{
 		Name:           mcpserver.ServerName,
@@ -243,8 +251,20 @@ func runMCP(args []string) int {
 		QueueSize:      cfg.QueueSize,
 		Tavily:         cfg.TavilyAPIKey != "",
 		Firecrawl:      cfg.FirecrawlAPIKey != "",
+		Toolset:        toolset,
 	}
 	srv.Register(mcpserver.GetConfigInfoTool(info, client.Ping))
+
+	// Async task-lifecycle tools are opt-in via --tools all / GROK_MCP_TOOLS=all.
+	// The capability is always compiled in; this only gates the advertised
+	// surface so the default agent sees a minimal six-tool selection.
+	if toolset == "all" {
+		taskStore := tasks.NewStore()
+		srv.Register(mcpserver.SubmitSearchTaskTool(taskStore, searchSvc))
+		srv.Register(mcpserver.GetSearchTaskResultTool(taskStore))
+		srv.Register(mcpserver.CancelSearchTaskTool(taskStore))
+		srv.Register(mcpserver.ListSearchTasksTool(taskStore))
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -256,11 +276,15 @@ func runMCP(args []string) int {
 		cancel()
 	}()
 
+	tools := "web_search,web_fetch,web_map,research_plan,web_search_batch,get_config_info"
+	if toolset == "all" {
+		tools += ",submit_search_task,get_search_task_result,cancel_search_task,list_search_tasks"
+	}
 	logger.Info("openscry.mcp_serving",
 		"model", cfg.Model, "base_url", cfg.APIBaseURL,
 		"provider", provider, "fetch_fallback", cfg.FetchFallback,
-		"transport", transport,
-		"tools", "web_search,web_fetch,web_map,research_plan,web_search_batch,submit_search_task,get_search_task_result,cancel_search_task,list_search_tasks,get_config_info",
+		"transport", transport, "toolset", toolset,
+		"tools", tools,
 		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
 		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize)
 

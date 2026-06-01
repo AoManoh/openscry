@@ -51,6 +51,17 @@ const (
 	// They are only used when the corresponding API key is configured.
 	DefaultTavilyURL    = "https://api.tavily.com"
 	DefaultFirecrawlURL = "https://api.firecrawl.dev/v1"
+
+	// DefaultMCPTools selects which tool set the MCP server exposes:
+	//   "core" (default) -- the six request/response tools agents actually
+	//            drive: web_search, web_fetch, web_map, research_plan,
+	//            web_search_batch, get_config_info. Minimal selection load.
+	//   "all"  -- core plus the async task-lifecycle tools (submit / get /
+	//            cancel / list_search_task), opt-in for long-running or
+	//            fire-and-poll workloads. The capability always exists in the
+	//            binary; this only gates the advertised surface.
+	// Operators choose via GROK_MCP_TOOLS or the `mcp --tools` flag.
+	DefaultMCPTools = "core"
 )
 
 // Config holds the resolved runtime configuration.
@@ -85,6 +96,10 @@ type Config struct {
 	// endpoint) and is distinct from APIKey (the upstream grok2api key).
 	HTTPAddr   string // GROK_HTTP_ADDR (e.g. ":8080"); empty = stdio
 	HTTPAPIKey string // GROK_HTTP_API_KEY — required when serving over HTTP
+
+	// MCPTools gates the advertised MCP tool surface ("core"|"all"); see
+	// DefaultMCPTools. The `mcp --tools` flag overrides this.
+	MCPTools string // GROK_MCP_TOOLS (default core)
 }
 
 // Load reads configuration from the environment and validates it.
@@ -105,6 +120,7 @@ func Load() (*Config, error) {
 		FirecrawlAPIURL: firstNonEmpty(strings.TrimSpace(os.Getenv("FIRECRAWL_API_URL")), DefaultFirecrawlURL),
 		HTTPAddr:        strings.TrimSpace(os.Getenv("GROK_HTTP_ADDR")),
 		HTTPAPIKey:      strings.TrimSpace(os.Getenv("GROK_HTTP_API_KEY")),
+		MCPTools:        DefaultMCPTools,
 	}
 
 	if raw := strings.TrimSpace(os.Getenv("GROK_REQUEST_TIMEOUT")); raw != "" {
@@ -148,10 +164,30 @@ func Load() (*Config, error) {
 		}
 	}
 
+	if raw := strings.TrimSpace(os.Getenv("GROK_MCP_TOOLS")); raw != "" {
+		v, err := NormalizeToolset(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GROK_MCP_TOOLS: %w", err)
+		}
+		cfg.MCPTools = v
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// NormalizeToolset validates and lower-cases a tool-set selector ("core"|
+// "all"). It is shared by env loading and the `mcp --tools` flag so both reject
+// an unknown value the same way (fail loud, never silently fall back).
+func NormalizeToolset(raw string) (string, error) {
+	switch v := strings.ToLower(strings.TrimSpace(raw)); v {
+	case "core", "all":
+		return v, nil
+	default:
+		return "", fmt.Errorf("unknown tool set %q (want core|all)", raw)
+	}
 }
 
 // Validate enforces required fields.

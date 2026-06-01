@@ -10,40 +10,42 @@ import (
 // /.well-known/mcp-config endpoint. It deliberately excludes API keys; only
 // booleans report whether optional providers are enabled.
 type ConfigInfo struct {
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	Protocol      string `json:"protocol_version"`
-	Transport     string `json:"transport"` // "stdio" | "http"
-	Model         string `json:"model"`
-	BaseURL       string `json:"base_url"`
-	Provider      string `json:"provider"`
-	FetchFallback string `json:"fetch_fallback"`
+	Name           string `json:"name"`
+	Version        string `json:"version"`
+	Protocol       string `json:"protocol_version"`
+	Transport      string `json:"transport"` // "stdio" | "http"
+	Model          string `json:"model"`
+	BaseURL        string `json:"base_url"`
+	Provider       string `json:"provider"`
+	FetchFallback  string `json:"fetch_fallback"`
 	RequestTimeout string `json:"request_timeout"`
-	Concurrency   int    `json:"concurrency"`
-	QueueSize     int    `json:"queue_size"`
-	Tavily        bool   `json:"tavily_enabled"`
-	Firecrawl     bool   `json:"firecrawl_enabled"`
+	Concurrency    int    `json:"concurrency"`
+	QueueSize      int    `json:"queue_size"`
+	Tavily         bool   `json:"tavily_enabled"`
+	Firecrawl      bool   `json:"firecrawl_enabled"`
+	Toolset        string `json:"toolset"` // core | all
 }
 
 // Map renders the snapshot as a JSON-friendly map (used by the well-known
 // config endpoint).
 func (c ConfigInfo) Map() map[string]any {
 	return map[string]any{
-		"name":             c.Name,
-		"version":          c.Version,
-		"protocol_version": c.Protocol,
-		"transport":        c.Transport,
-		"model":            c.Model,
-		"base_url":         c.BaseURL,
-		"provider":         c.Provider,
-		"fetch_fallback":   c.FetchFallback,
-		"request_timeout":  c.RequestTimeout,
-		"concurrency":      c.Concurrency,
-		"queue_size":       c.QueueSize,
-		"tavily_enabled":   c.Tavily,
+		"name":              c.Name,
+		"version":           c.Version,
+		"protocol_version":  c.Protocol,
+		"transport":         c.Transport,
+		"model":             c.Model,
+		"base_url":          c.BaseURL,
+		"provider":          c.Provider,
+		"fetch_fallback":    c.FetchFallback,
+		"request_timeout":   c.RequestTimeout,
+		"concurrency":       c.Concurrency,
+		"queue_size":        c.QueueSize,
+		"tavily_enabled":    c.Tavily,
 		"firecrawl_enabled": c.Firecrawl,
-		"endpoint":         "/mcp",
-		"authentication":   map[string]any{"scheme": "bearer", "headers": []string{"Authorization", "X-API-Key"}},
+		"toolset":           c.Toolset,
+		"endpoint":          "/mcp",
+		"authentication":    map[string]any{"scheme": "bearer", "headers": []string{"Authorization", "X-API-Key"}},
 	}
 }
 
