@@ -128,7 +128,7 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 		return 1
 	}
 
-	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
+	client := grok.NewClientWithLimit(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout, cfg.UpstreamConcurrency)
 	provider := config.ResolveSearchProvider(cfg.SearchProvider, cfg.APIBaseURL)
 	svc := search.NewWithOptions(client, cfg.Model, search.Options{
 		Provider:    provider,
@@ -182,7 +182,7 @@ func runMCP(args []string) int {
 	// Logs go to stderr; stdout is reserved exclusively for the MCP
 	// JSON-RPC stream.
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
+	client := grok.NewClientWithLimit(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout, cfg.UpstreamConcurrency)
 	provider := config.ResolveSearchProvider(cfg.SearchProvider, cfg.APIBaseURL)
 	searchSvc := search.NewWithOptions(client, cfg.Model, search.Options{
 		Provider:    provider,
@@ -238,20 +238,21 @@ func runMCP(args []string) int {
 	srv.Register(mcpserver.WebSearchBatchTool(searchSvc))
 
 	info := mcpserver.ConfigInfo{
-		Name:           mcpserver.ServerName,
-		Version:        version,
-		Protocol:       mcpserver.MCPProtocolVersion,
-		Transport:      transport,
-		Model:          cfg.Model,
-		BaseURL:        cfg.APIBaseURL,
-		Provider:       provider,
-		FetchFallback:  cfg.FetchFallback,
-		RequestTimeout: cfg.RequestTimeout.String(),
-		Concurrency:    cfg.Concurrency,
-		QueueSize:      cfg.QueueSize,
-		Tavily:         cfg.TavilyAPIKey != "",
-		Firecrawl:      cfg.FirecrawlAPIKey != "",
-		Toolset:        toolset,
+		Name:                mcpserver.ServerName,
+		Version:             version,
+		Protocol:            mcpserver.MCPProtocolVersion,
+		Transport:           transport,
+		Model:               cfg.Model,
+		BaseURL:             cfg.APIBaseURL,
+		Provider:            provider,
+		FetchFallback:       cfg.FetchFallback,
+		RequestTimeout:      cfg.RequestTimeout.String(),
+		Concurrency:         cfg.Concurrency,
+		QueueSize:           cfg.QueueSize,
+		UpstreamConcurrency: cfg.UpstreamConcurrency,
+		Tavily:              cfg.TavilyAPIKey != "",
+		Firecrawl:           cfg.FirecrawlAPIKey != "",
+		Toolset:             toolset,
 	}
 	srv.Register(mcpserver.GetConfigInfoTool(info, client.Ping))
 
@@ -286,7 +287,8 @@ func runMCP(args []string) int {
 		"transport", transport, "toolset", toolset,
 		"tools", tools,
 		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
-		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize)
+		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize,
+		"upstream_concurrency", cfg.UpstreamConcurrency)
 
 	var serveErr error
 	if transport == "http" {
@@ -299,6 +301,11 @@ func runMCP(args []string) int {
 			APIKey:         cfg.HTTPAPIKey,
 			ReadinessProbe: client.Ping,
 			ConfigInfo:     info.Map(),
+			// Admission cap mirrors the stdio engine's total in-flight
+			// capacity (worker pool + bounded queue) so HTTP bounds local
+			// request processing the way stdio does; the upstream-concurrency
+			// limiter separately bounds grok2api load.
+			MaxInFlight: cfg.Concurrency + cfg.QueueSize,
 		})
 	} else {
 		serveErr = srv.Serve(ctx)
@@ -330,7 +337,7 @@ usage: openscry fetch [--timeout D] <url>`)
 		return 1
 	}
 
-	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
+	client := grok.NewClientWithLimit(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout, cfg.UpstreamConcurrency)
 	fetchSvc := fetch.New(client, fetch.Options{
 		Model:           cfg.Model,
 		Strict:          cfg.FetchFallback == "strict",
@@ -437,7 +444,7 @@ usage: openscry plan [--timeout D] "your research question"`)
 		return 1
 	}
 
-	client := grok.NewClient(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
+	client := grok.NewClientWithLimit(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout, cfg.UpstreamConcurrency)
 	planSvc := planner.New(client, planner.Options{Model: cfg.Model})
 
 	ctx := context.Background()

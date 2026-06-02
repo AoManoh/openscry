@@ -28,6 +28,14 @@ type HTTPOptions struct {
 	RequestTimeout time.Duration                   // per-request budget; <= 0 uses the default
 	ReadinessProbe func(ctx context.Context) error // optional /ready upstream check; nil = liveness only
 	ConfigInfo     map[string]any                  // static payload for /.well-known/mcp-config
+	// MaxInFlight bounds concurrently-processing /mcp requests. net/http
+	// spawns a goroutine per connection, so without this an HTTP request
+	// flood is unbounded (goroutines, FDs, memory) — unlike stdio, whose
+	// engine worker pool already bounds processing. This admission limit is
+	// the HTTP analog. It is orthogonal to the upstream-concurrency limiter
+	// (which bounds grok2api load): this protects local resources. <= 0
+	// disables admission control.
+	MaxInFlight int
 }
 
 // ServeHTTP runs the MCP server over a minimal HTTP JSON-RPC transport until
@@ -106,8 +114,38 @@ func (s *Server) httpMux(opt HTTPOptions) (http.Handler, error) {
 		}
 		writeJSON(w, http.StatusOK, info)
 	})
-	mux.Handle("/mcp", s.requireAuth(opt.APIKey, s.mcpPostHandler(reqTimeout)))
+	// Admission control wraps the handler INSIDE auth: an unauthenticated
+	// flood is rejected by requireAuth (a cheap constant-time compare) before
+	// it can consume an admission slot, so it cannot starve authenticated
+	// clients.
+	var admit chan struct{}
+	if opt.MaxInFlight > 0 {
+		admit = make(chan struct{}, opt.MaxInFlight)
+	}
+	mux.Handle("/mcp", s.requireAuth(opt.APIKey, s.admitInFlight(admit, s.mcpPostHandler(reqTimeout))))
 	return mux, nil
+}
+
+// admitInFlight bounds concurrently-processing /mcp requests with a buffered
+// channel. Acquisition is non-blocking (try-acquire): when the limiter is full
+// the request is rejected immediately with 503 + Retry-After rather than
+// queued, because an HTTP client can retry on its own — this is the
+// transport-appropriate backpressure, distinct from stdio's never-drop
+// synchronous fallback. A nil semaphore disables admission control.
+func (s *Server) admitInFlight(sem chan struct{}, next http.Handler) http.Handler {
+	if sem == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+			next.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "server at capacity; retry shortly"})
+		}
+	})
 }
 
 // mcpPostHandler dispatches one JSON-RPC message per POST through the shared

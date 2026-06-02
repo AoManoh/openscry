@@ -33,6 +33,13 @@ const (
 	CodeEmpty Code = "empty"
 	// CodeDecode indicates a request/response (de)serialization failure.
 	CodeDecode Code = "decode"
+	// CodeOverloaded indicates the local upstream-concurrency limiter could
+	// not grant a slot before the deadline elapsed. It is a LOCAL condition,
+	// not an upstream-health signal, so it deliberately maps to neither a
+	// retry nor a breaker failure (it must not trip the circuit breaker the
+	// way CodeTimeout/CodeConnect do). The request was bounded on purpose;
+	// the caller should back off (HTTP transport surfaces it as 503).
+	CodeOverloaded Code = "overloaded"
 )
 
 // Error is the structured error returned by the grok client.

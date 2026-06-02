@@ -26,18 +26,43 @@ type Client struct {
 	apiKey     string
 	timeout    time.Duration
 	httpClient *http.Client
+
+	// sem is a global upstream-concurrency limiter shared across every
+	// Complete call on this client (and thus across the search, batch and
+	// fetch paths, which all share one client instance). nil means
+	// unlimited — the historical behavior, preserved by NewClient so tests
+	// and any non-production caller are unaffected. A buffered channel is
+	// used (not x/sync/semaphore) to honor the zero-dependency constraint
+	// while staying context-aware on acquire. Ping deliberately bypasses it
+	// so a saturated upstream still answers liveness/readiness checks.
+	sem chan struct{}
 }
 
-// NewClient constructs a Client. baseURL should include the version prefix
-// (e.g. https://host/v1). timeout is applied defensively when the caller's
-// context carries no deadline.
+// NewClient constructs a Client with no upstream-concurrency limit. baseURL
+// should include the version prefix (e.g. https://host/v1). timeout is applied
+// defensively when the caller's context carries no deadline.
 func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
-	return &Client{
+	return NewClientWithLimit(baseURL, apiKey, timeout, 0)
+}
+
+// NewClientWithLimit is NewClient plus a global upstream-concurrency cap:
+// maxConcurrent bounds how many Complete calls may be in flight against
+// grok2api at once, across every consumer sharing this client. maxConcurrent
+// <= 0 disables the limiter (unlimited, identical to NewClient). Production
+// paths wire this from GROK_UPSTREAM_CONCURRENCY so a request flood (or a
+// web_search_batch fan-out) cannot amplify into unbounded simultaneous
+// upstream calls regardless of transport.
+func NewClientWithLimit(baseURL, apiKey string, timeout time.Duration, maxConcurrent int) *Client {
+	c := &Client{
 		baseURL:    strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		apiKey:     apiKey,
 		timeout:    timeout,
 		httpClient: &http.Client{},
 	}
+	if maxConcurrent > 0 {
+		c.sem = make(chan struct{}, maxConcurrent)
+	}
+	return c
 }
 
 type chatMessage struct {
@@ -93,6 +118,16 @@ func (c *Client) Complete(ctx context.Context, model, systemPrompt, userContent 
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+
+	// Bound concurrent upstream calls (no-op when the limiter is disabled).
+	// The slot is held for the whole streaming exchange — Do plus parseSSE —
+	// because a streaming response keeps the upstream connection busy until
+	// the stream is fully consumed, so that is the true unit of upstream load.
+	release, err := c.acquire(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -175,6 +210,35 @@ func parseSSE(ctx context.Context, body io.Reader) (string, error) {
 			return "", classifyTransportError(ctx, readErr)
 		}
 	}
+}
+
+// acquire takes one upstream-concurrency slot, blocking until a slot is free
+// or ctx is done. It returns a release function (always safe to call) and a
+// nil error on success. When the limiter is disabled (sem == nil) it is a
+// no-op. On ctx expiry it returns a structured *Error classified so a local
+// saturation never trips the breaker (see classifyAcquireError).
+func (c *Client) acquire(ctx context.Context) (release func(), err error) {
+	if c.sem == nil {
+		return func() {}, nil
+	}
+	select {
+	case c.sem <- struct{}{}:
+		return func() { <-c.sem }, nil
+	case <-ctx.Done():
+		return nil, classifyAcquireError(ctx)
+	}
+}
+
+// classifyAcquireError maps a context cancellation that occurred while waiting
+// for an upstream slot. A deadline expiry becomes CodeOverloaded (a LOCAL
+// condition: we were saturated past the deadline) which is deliberately NOT a
+// breaker failure and NOT retryable — the upstream may be perfectly healthy.
+// An explicit cancellation becomes CodeCanceled.
+func classifyAcquireError(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return &Error{Code: CodeCanceled, Message: "request canceled while awaiting an upstream slot"}
+	}
+	return &Error{Code: CodeOverloaded, Message: "upstream concurrency limit saturated: deadline elapsed before a slot was free"}
 }
 
 func classifyTransportError(ctx context.Context, err error) error {

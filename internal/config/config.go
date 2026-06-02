@@ -32,6 +32,17 @@ const (
 	maxConcurrency     = 100
 	maxQueueSize       = 10000
 
+	// DefaultUpstreamConcurrency caps simultaneous in-flight grok2api calls
+	// across every consumer sharing the client (search, web_search_batch
+	// fan-out, fetch) regardless of transport. Unlike GROK_CONCURRENCY (which
+	// bounds MCP request *processing* and only in stdio mode), this bounds
+	// the actual upstream load and is honored in both stdio and HTTP. It
+	// defaults ON (protect-by-default); set GROK_UPSTREAM_CONCURRENCY=0 to
+	// disable. Distinct knob because request concurrency and upstream
+	// concurrency are genuinely different concerns.
+	DefaultUpstreamConcurrency = 32
+	maxUpstreamConcurrency     = 256
+
 	// DefaultSearchProvider selects the search provider mode. "auto" resolves
 	// to "responses" only for the official api.x.ai host, otherwise "chat"
 	// (the proven path for grok2api). See ResolveSearchProvider.
@@ -72,7 +83,11 @@ type Config struct {
 	RequestTimeout time.Duration // GROK_REQUEST_TIMEOUT (default 120s, clamped [5s,600s])
 	Concurrency    int           // GROK_CONCURRENCY — MCP worker pool size (default 8, clamp [1,100])
 	QueueSize      int           // GROK_QUEUE_SIZE — MCP request queue size (default 64, clamp [1,10000])
-	Debug          bool          // GROK_DEBUG
+	// UpstreamConcurrency caps simultaneous in-flight grok2api calls across
+	// all consumers and transports (GROK_UPSTREAM_CONCURRENCY; default 32,
+	// clamp [1,256]; 0 disables). See DefaultUpstreamConcurrency.
+	UpstreamConcurrency int
+	Debug               bool // GROK_DEBUG
 
 	// SearchProvider is the raw mode (auto|chat|responses); resolve the
 	// effective mode for a given base URL via ResolveSearchProvider.
@@ -105,22 +120,23 @@ type Config struct {
 // Load reads configuration from the environment and validates it.
 func Load() (*Config, error) {
 	cfg := &Config{
-		APIBaseURL:      strings.TrimSpace(os.Getenv("GROK_API_URL")),
-		APIKey:          strings.TrimSpace(os.Getenv("GROK_API_KEY")),
-		Model:           strings.TrimSpace(os.Getenv("GROK_MODEL")),
-		RequestTimeout:  DefaultRequestTimeout,
-		Concurrency:     DefaultConcurrency,
-		QueueSize:       DefaultQueueSize,
-		Debug:           parseBoolEnv("GROK_DEBUG"),
-		SearchProvider:  DefaultSearchProvider,
-		FetchFallback:   DefaultFetchFallback,
-		TavilyAPIKey:    strings.TrimSpace(os.Getenv("TAVILY_API_KEY")),
-		TavilyAPIURL:    firstNonEmpty(strings.TrimSpace(os.Getenv("TAVILY_API_URL")), DefaultTavilyURL),
-		FirecrawlAPIKey: strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")),
-		FirecrawlAPIURL: firstNonEmpty(strings.TrimSpace(os.Getenv("FIRECRAWL_API_URL")), DefaultFirecrawlURL),
-		HTTPAddr:        strings.TrimSpace(os.Getenv("GROK_HTTP_ADDR")),
-		HTTPAPIKey:      strings.TrimSpace(os.Getenv("GROK_HTTP_API_KEY")),
-		MCPTools:        DefaultMCPTools,
+		APIBaseURL:          strings.TrimSpace(os.Getenv("GROK_API_URL")),
+		APIKey:              strings.TrimSpace(os.Getenv("GROK_API_KEY")),
+		Model:               strings.TrimSpace(os.Getenv("GROK_MODEL")),
+		RequestTimeout:      DefaultRequestTimeout,
+		Concurrency:         DefaultConcurrency,
+		QueueSize:           DefaultQueueSize,
+		UpstreamConcurrency: DefaultUpstreamConcurrency,
+		Debug:               parseBoolEnv("GROK_DEBUG"),
+		SearchProvider:      DefaultSearchProvider,
+		FetchFallback:       DefaultFetchFallback,
+		TavilyAPIKey:        strings.TrimSpace(os.Getenv("TAVILY_API_KEY")),
+		TavilyAPIURL:        firstNonEmpty(strings.TrimSpace(os.Getenv("TAVILY_API_URL")), DefaultTavilyURL),
+		FirecrawlAPIKey:     strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")),
+		FirecrawlAPIURL:     firstNonEmpty(strings.TrimSpace(os.Getenv("FIRECRAWL_API_URL")), DefaultFirecrawlURL),
+		HTTPAddr:            strings.TrimSpace(os.Getenv("GROK_HTTP_ADDR")),
+		HTTPAPIKey:          strings.TrimSpace(os.Getenv("GROK_HTTP_API_KEY")),
+		MCPTools:            DefaultMCPTools,
 	}
 
 	if raw := strings.TrimSpace(os.Getenv("GROK_REQUEST_TIMEOUT")); raw != "" {
@@ -144,6 +160,19 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid GROK_QUEUE_SIZE (want integer): %w", err)
 		}
 		cfg.QueueSize = clampInt(n, 1, maxQueueSize)
+	}
+	if raw := strings.TrimSpace(os.Getenv("GROK_UPSTREAM_CONCURRENCY")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GROK_UPSTREAM_CONCURRENCY (want integer): %w", err)
+		}
+		// <= 0 is the explicit escape hatch: disable the limiter (unlimited).
+		// Any positive value is clamped into the supported range.
+		if n <= 0 {
+			cfg.UpstreamConcurrency = 0
+		} else {
+			cfg.UpstreamConcurrency = clampInt(n, 1, maxUpstreamConcurrency)
+		}
 	}
 
 	if raw := strings.ToLower(strings.TrimSpace(os.Getenv("GROK_SEARCH_PROVIDER"))); raw != "" {

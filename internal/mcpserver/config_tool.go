@@ -21,31 +21,36 @@ type ConfigInfo struct {
 	RequestTimeout string `json:"request_timeout"`
 	Concurrency    int    `json:"concurrency"`
 	QueueSize      int    `json:"queue_size"`
-	Tavily         bool   `json:"tavily_enabled"`
-	Firecrawl      bool   `json:"firecrawl_enabled"`
-	Toolset        string `json:"toolset"` // core | all
+	// UpstreamConcurrency is the global cap on simultaneous grok2api calls.
+	// Unlike Concurrency (stdio-only request processing), this is honored in
+	// both transports, so the reported value is always accurate. 0 = disabled.
+	UpstreamConcurrency int    `json:"upstream_concurrency"`
+	Tavily              bool   `json:"tavily_enabled"`
+	Firecrawl           bool   `json:"firecrawl_enabled"`
+	Toolset             string `json:"toolset"` // core | all
 }
 
 // Map renders the snapshot as a JSON-friendly map (used by the well-known
 // config endpoint).
 func (c ConfigInfo) Map() map[string]any {
 	return map[string]any{
-		"name":              c.Name,
-		"version":           c.Version,
-		"protocol_version":  c.Protocol,
-		"transport":         c.Transport,
-		"model":             c.Model,
-		"base_url":          c.BaseURL,
-		"provider":          c.Provider,
-		"fetch_fallback":    c.FetchFallback,
-		"request_timeout":   c.RequestTimeout,
-		"concurrency":       c.Concurrency,
-		"queue_size":        c.QueueSize,
-		"tavily_enabled":    c.Tavily,
-		"firecrawl_enabled": c.Firecrawl,
-		"toolset":           c.Toolset,
-		"endpoint":          "/mcp",
-		"authentication":    map[string]any{"scheme": "bearer", "headers": []string{"Authorization", "X-API-Key"}},
+		"name":                 c.Name,
+		"version":              c.Version,
+		"protocol_version":     c.Protocol,
+		"transport":            c.Transport,
+		"model":                c.Model,
+		"base_url":             c.BaseURL,
+		"provider":             c.Provider,
+		"fetch_fallback":       c.FetchFallback,
+		"request_timeout":      c.RequestTimeout,
+		"concurrency":          c.Concurrency,
+		"queue_size":           c.QueueSize,
+		"upstream_concurrency": c.UpstreamConcurrency,
+		"tavily_enabled":       c.Tavily,
+		"firecrawl_enabled":    c.Firecrawl,
+		"toolset":              c.Toolset,
+		"endpoint":             "/mcp",
+		"authentication":       map[string]any{"scheme": "bearer", "headers": []string{"Authorization", "X-API-Key"}},
 	}
 }
 
