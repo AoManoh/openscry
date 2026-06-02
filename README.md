@@ -8,16 +8,17 @@ openscry 是 Python 版 `GrokSearch` MCP 服务的 Go 重写。它消费 `grok2a
 
 ## 能力
 
-| CLI | MCP 工具 | 说明 |
-|-----|----------|------|
-| `openscry search` | `web_search` | 经 grok2api 的深度网页搜索（可选 extra_sources 参考信源补强） |
-| `openscry fetch` | `web_fetch` | URL 正文提取（Tavily/Firecrawl/Grok/HTTP 多级回退） |
-| `openscry map` | `web_map` | 站点结构发现（Tavily /map 或 HTTP BFS 爬取） |
-| `openscry plan` | `research_plan` | 离线研究计划生成（模型驱动的结构化 JSON） |
-| — | `web_search_batch` | 并发批量搜索（多 query，故障逐项隔离，上限 32） |
-| — | `get_config_info` | 运行时配置与上游连通性自检（绝不泄露密钥） |
+| CLI                 | MCP 工具             | 说明                                                          |
+| ------------------- | -------------------- | ------------------------------------------------------------- |
+| `openscry search` | `web_search`       | 经 grok2api 的深度网页搜索（可选 extra_sources 参考信源补强） |
+| `openscry fetch`  | `web_fetch`        | URL 正文提取（Tavily/Firecrawl/Grok/HTTP 多级回退）           |
+| `openscry map`    | `web_map`          | 站点结构发现（Tavily /map 或 HTTP BFS 爬取）                  |
+| `openscry plan`   | `research_plan`    | 离线研究计划生成（模型驱动的结构化 JSON）                     |
+| —                  | `web_search_batch` | 并发批量搜索（多 query，故障逐项隔离，上限 32）               |
+| —                  | `get_config_info`  | 运行时配置与上游连通性自检（绝不泄露密钥）                    |
 
 MCP 工具面通过 `--tools` 分级：
+
 - **core（默认，6 个）**：web_search / web_fetch / web_map / research_plan / web_search_batch / get_config_info
 - **all（10 个）**：core + 异步任务族 submit_search_task / get_search_task_result / cancel_search_task / list_search_tasks
 
@@ -74,7 +75,38 @@ export FIRECRAWL_API_KEY=             # 启用 fetch 的 Firecrawl 级
 ./openscry version
 ```
 
-## 在 Windsurf 中配置 MCP
+## 在 IDE中配置 MCP
+
+在 `mcp_config.json` 的 `mcpServers` 中加入 openscry。**推荐在线方式**——无需本地构建，`go run` 会自动从 GitHub 拉取源码并编译：
+
+```json
+{
+  "mcpServers": {
+    "openscry-mcp": {
+      "command": "go",
+      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@main", "mcp", "--tools", "all"],
+      "env": {
+        "GROK_API_URL": "https://你的-host/v1",
+        "GROK_API_KEY": "你的-key",
+        "GROK_MODEL": "grok-4.20-fast"
+      }
+    }
+  }
+}
+```
+
+首次启动会拉取并编译（稍慢），之后走缓存秒级启动。
+
+**国内用户网络不好时**，在 `env` 中追加下面两项，走国内镜像加速拉取（海外或网络通畅的用户可省略）：
+
+```json
+"GOPROXY": "https://goproxy.cn,direct",
+"GOSUMDB": "sum.golang.google.cn"
+```
+
+若首次因校验失败，把 `GOSUMDB` 改为 `off` 即可。
+
+也可以**先本地构建**，再用二进制路径（适合离线或锁定版本）：
 
 ```json
 {

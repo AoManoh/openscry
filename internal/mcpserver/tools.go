@@ -82,6 +82,10 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 			}
 			text = b.String()
 		}
+		// 追加模型标识，闭合 fail-loud 可观测性环：agent 可验证实际服务的模型
+		if res.Model != "" {
+			text += "\n\n> model: " + res.Model
+		}
 		return &ToolCallResult{
 			Content: []ContentItem{{Type: "text", Text: text}},
 		}, nil

@@ -338,23 +338,18 @@ func asInt(v any) int {
 	return 0
 }
 
-// asStringSlice coerces a JSON array argument into a trimmed []string, dropping
-// blank entries. It tolerates both []any (from JSON) and []string.
+// asStringSlice coerces a JSON array argument into a []string.
+// 只做类型强转，不做策略决策（不丢弃空白）——空白语义由下游 BatchSearch
+// 统一管辖（标记 skipped），保持与 GrokSearch 基线契约一致。
 func asStringSlice(v any) []string {
 	var out []string
 	switch arr := v.(type) {
 	case []string:
-		for _, s := range arr {
-			if t := strings.TrimSpace(s); t != "" {
-				out = append(out, t)
-			}
-		}
+		out = append(out, arr...)
 	case []any:
 		for _, item := range arr {
 			if s, ok := item.(string); ok {
-				if t := strings.TrimSpace(s); t != "" {
-					out = append(out, t)
-				}
+				out = append(out, s)
 			}
 		}
 	}

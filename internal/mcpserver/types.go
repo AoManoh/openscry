@@ -13,7 +13,7 @@ const (
 	JSONRPCVersion     = "2.0"
 	MCPProtocolVersion = "2024-11-05"
 	ServerName         = "openscry-mcp"
-	ServerVersion      = "0.2.0-s5"
+	ServerVersion      = "0.2.0-s6"
 )
 
 // JSON-RPC 2.0 error codes (subset) plus an openscry tool-execution code.

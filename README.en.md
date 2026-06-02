@@ -8,16 +8,17 @@ openscry is the Go rewrite of the Python `GrokSearch` MCP server. It consumes `g
 
 ## Capabilities
 
-| CLI | MCP Tool | Description |
-|-----|----------|-------------|
-| `openscry search` | `web_search` | Deep web search via grok2api (optional extra_sources enrichment) |
-| `openscry fetch` | `web_fetch` | URL content extraction (Tavily/Firecrawl/Grok/HTTP multi-tier fallback) |
-| `openscry map` | `web_map` | Site structure discovery (Tavily /map or HTTP BFS crawl) |
-| `openscry plan` | `research_plan` | Offline research plan generation (model-driven structured JSON) |
-| — | `web_search_batch` | Concurrent batch search (multi-query, per-item failure isolation, capped at 32) |
-| — | `get_config_info` | Runtime config + upstream connectivity self-check (never leaks secrets) |
+| CLI                 | MCP Tool             | Description                                                                     |
+| ------------------- | -------------------- | ------------------------------------------------------------------------------- |
+| `openscry search` | `web_search`       | Deep web search via grok2api (optional extra_sources enrichment)                |
+| `openscry fetch`  | `web_fetch`        | URL content extraction (Tavily/Firecrawl/Grok/HTTP multi-tier fallback)         |
+| `openscry map`    | `web_map`          | Site structure discovery (Tavily /map or HTTP BFS crawl)                        |
+| `openscry plan`   | `research_plan`    | Offline research plan generation (model-driven structured JSON)                 |
+| —                  | `web_search_batch` | Concurrent batch search (multi-query, per-item failure isolation, capped at 32) |
+| —                  | `get_config_info`  | Runtime config + upstream connectivity self-check (never leaks secrets)         |
 
 The MCP tool surface is gated by `--tools`:
+
 - **core (default, 6):** web_search, web_fetch, web_map, research_plan, web_search_batch, get_config_info
 - **all (10):** core + async task family submit_search_task, get_search_task_result, cancel_search_task, list_search_tasks
 
@@ -74,7 +75,38 @@ See `.env.example` for the complete reference.
 ./openscry version
 ```
 
-## Windsurf MCP configuration
+## IDE MCP configuration
+
+Add openscry under `mcpServers` in your `mcp_config.json`. **Online mode is recommended** — no local build needed, `go run` pulls the source from GitHub and compiles it automatically:
+
+```json
+{
+  "mcpServers": {
+    "openscry-mcp": {
+      "command": "go",
+      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@main", "mcp", "--tools", "all"],
+      "env": {
+        "GROK_API_URL": "https://your-host/v1",
+        "GROK_API_KEY": "your-key",
+        "GROK_MODEL": "grok-4.20-fast"
+      }
+    }
+  }
+}
+```
+
+The first launch fetches and compiles (slightly slow); subsequent launches start in seconds from cache.
+
+**For users in mainland China with poor connectivity**, add these two entries to `env` to pull through domestic mirrors (omit them if your network is fine or you are outside China):
+
+```json
+"GOPROXY": "https://goproxy.cn,direct",
+"GOSUMDB": "sum.golang.google.cn"
+```
+
+If the first launch fails on checksum verification, set `GOSUMDB` to `off`.
+
+You can also **build locally** and point to the binary (good for offline or pinned versions):
 
 ```json
 {
