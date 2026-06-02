@@ -67,11 +67,20 @@ func (r Request) normalized() Request {
 	if r.MaxDepth < 1 {
 		r.MaxDepth = 1
 	}
+	if r.MaxDepth > 5 {
+		r.MaxDepth = 5
+	}
 	if r.MaxBreadth < 1 {
 		r.MaxBreadth = 20
 	}
+	if r.MaxBreadth > 500 {
+		r.MaxBreadth = 500
+	}
 	if r.Limit < 1 {
 		r.Limit = 50
+	}
+	if r.Limit > 500 {
+		r.Limit = 500
 	}
 	return r
 }
