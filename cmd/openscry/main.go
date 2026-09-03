@@ -30,9 +30,11 @@ import (
 	"github.com/AoManoh/openscry/internal/refsource"
 	"github.com/AoManoh/openscry/internal/search"
 	"github.com/AoManoh/openscry/internal/tasks"
+	versioninfo "github.com/AoManoh/openscry/internal/version"
 )
 
-const version = mcpserver.ServerVersion
+// version 来自 Go build 信息（发布 tag / 伪版本 / devel），见 internal/version。
+var version = versioninfo.Value()
 
 // newRefProvider builds the extra_sources reference provider from config. It
 // is always constructed; refsource.Provider.Available() is false (and the

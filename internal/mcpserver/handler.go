@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/AoManoh/openscry/internal/version"
 )
 
 // ToolHandler executes a tool call. ctx carries request cancellation (from a
@@ -73,7 +75,7 @@ func (h *protocolHandler) HandleMessage(ctx context.Context, raw []byte) (*JSONR
 		return newSuccess(req.ID, InitializeResult{
 			ProtocolVersion: MCPProtocolVersion,
 			Capabilities:    ServerCapabilities{Tools: &ToolsCapability{ListChanged: false}},
-			ServerInfo:      ServerInfo{Name: ServerName, Version: ServerVersion},
+			ServerInfo:      ServerInfo{Name: ServerName, Version: version.Value()},
 		}), nil
 	case "notifications/initialized":
 		h.initialized.Store(true)
