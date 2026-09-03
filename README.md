@@ -25,7 +25,8 @@ MCP 工具面通过 `--tools` 分级：
 ## 设计原则
 
 - **模型由用户指定，绝不默认。** `GROK_MODEL` 必填；不可用的模型显式失败（exit 1 / MCP `isError=true`），绝不静默切换到其他模型。
-- **降级可见。** web_fetch 报告结果由哪一级产出；`GROK_FETCH_FALLBACK=strict` 完全禁用低保真的 basic-HTTP 回退。
+- **降级可见。** web_fetch 报告结果由哪一级产出；`GROK_FETCH_FALLBACK=strict` 完全禁用低保真的 basic-HTTP 回退；搜索答案解析不出任何来源时附带 warning。
+- **搜索工具由请求显式声明。** 每次搜索都在请求的 `tools` 数组声明托管搜索工具（默认 `web_search`，可加 `x_search`），不依赖上游"自动搜索"；grok2api v3 的 Console 路由只执行客户端声明的工具。`GROK_SEARCH_TOOLS=none` 可关闭。
 - **单一代码路径。** CLI 与 MCP 适配层共用同一套核心包（`internal/search` / `fetch` / `mapper` / `planner`）。
 - **内建弹性。** 熔断器、共享预算的有界重试、分操作超时档（search 120s / fetch 30s / map 90s）、尊重上游 Retry-After。
 
@@ -46,6 +47,7 @@ export GROK_MODEL=grok-4.20-fast      # 用户指定，绝不默认
 # 可选
 export GROK_REQUEST_TIMEOUT=120s
 export GROK_SEARCH_PROVIDER=auto      # auto|chat|responses
+export GROK_SEARCH_TOOLS=web_search   # 搜索请求声明的托管工具，逗号分隔；可加 x_search；none 关闭
 export GROK_FETCH_FALLBACK=full       # full|strict
 export GROK_CONCURRENCY=8             # MCP worker 池大小（stdio 请求处理）
 export GROK_QUEUE_SIZE=64             # MCP 有界队列容量
@@ -58,6 +60,8 @@ export FIRECRAWL_API_KEY=             # 启用 fetch 的 Firecrawl 级
 ```
 
 完整参考见 `.env.example`。
+
+`GROK_SEARCH_TOOLS` 说明：默认 `web_search`，对 grok2api v3 的 Console 与 Grok Web 路由都可用；`web_search,x_search` 额外检索 X（Twitter）内容，但 Grok Web 路由不支持 `x_search`（上游返回 400，openscry 原样透出），只在 `GROK_MODEL` 指向 Console 模型（如 `grok-4.3`）时追加；`none` 恢复只发 `model/messages/stream` 的旧请求形态。工具仅作用于 `web_search` / `web_search_batch` / 异步搜索任务，不影响 `web_fetch` 与 `research_plan`。
 
 ## 使用
 

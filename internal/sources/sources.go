@@ -29,7 +29,7 @@ type Source struct {
 var (
 	urlPattern     = regexp.MustCompile(`https?://[^\s<>"'` + "`" + `，。、；：！？》）】)]+`)
 	mdLinkPattern  = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^)]+)\)`)
-	headingPattern = regexp.MustCompile(`(?im)^(?:#{1,6}\s*)?(?:\*\*|__)?\s*(?:sources?|references?|citations?|信源|参考资料|参考|引用|来源列表|来源)\s*(?:\*\*|__)?(?:\s*[（(][^)\n]*[)）])?\s*[:：]?\s*$`)
+	headingPattern = regexp.MustCompile(`(?im)^(?:#{1,6}\s*)?(?:\*\*|__)?\s*(?:sources?|references?|citations?|信源|参考资料|参考|引用|来源列表|来源)\s*[:：]?\s*(?:\*\*|__)?(?:\s*[（(][^)\n]*[)）])?\s*[:：]?\s*$`)
 	functionPattern = regexp.MustCompile(`(?im)(^|\n)\s*(sources|source|citations|citation|references|reference|citation_card|source_cards|source_card)\s*\(`)
 	inlineCitation  = regexp.MustCompile(`\[\[(\d+)\]\]\((https?://[^)\s]+)\)`)
 	listPrefix      = regexp.MustCompile(`^\s*(?:[-*]|\d+\.)\s*`)

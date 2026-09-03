@@ -33,6 +33,9 @@ type Service struct {
 	breaker      *resilience.Breaker
 	retryOpts    resilience.RetryOptions
 	refProvider  *refsource.Provider // optional extra_sources fan-out; nil disables it
+	// tools 是每次搜索请求声明的托管工具类型（来自 GROK_SEARCH_TOOLS）。空表示
+	// 不声明，请求形态与历史版本一致。
+	tools []string
 }
 
 // Options tunes the search service's resilience layer. The zero value is
@@ -46,6 +49,9 @@ type Options struct {
 	RetryBudgetRefillPerSec float64             // budget refill rate (default 2/s)
 	Provider                string              // resolved provider mode ("chat"|"responses"); empty = chat
 	RefProvider             *refsource.Provider // optional extra_sources reference fan-out
+	// Tools 是搜索请求声明的托管工具类型，例如 []string{"web_search","x_search"}；
+	// 通常直接传入 config.Config.SearchTools。空表示不声明。
+	Tools []string
 }
 
 // New constructs a Service with default resilience settings.
@@ -81,6 +87,7 @@ func NewWithOptions(client *grok.Client, defaultModel string, opt Options) *Serv
 		defaultModel: defaultModel,
 		provider:     provider,
 		refProvider:  opt.RefProvider,
+		tools:        append([]string(nil), opt.Tools...),
 		profiles:     opt.Profiles.Normalize(),
 		breaker:      resilience.NewBreaker(opt.Breaker),
 		retryOpts: resilience.RetryOptions{
@@ -169,11 +176,11 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 		}()
 	}
 
-	content, err := resilience.Retry(opCtx, s.retryOpts, func(c context.Context) (string, error) {
-		var out string
+	completion, err := resilience.Retry(opCtx, s.retryOpts, func(c context.Context) (*grok.Completion, error) {
+		var out *grok.Completion
 		gerr := s.breaker.Guard(func() error {
 			var e error
-			out, e = s.client.Complete(c, model, prompt.SearchPrompt, userContent)
+			out, e = s.client.CompleteDetailed(c, model, prompt.SearchPrompt, userContent, s.tools)
 			return e
 		}, isBreakerFailure)
 		return out, gerr
@@ -187,13 +194,41 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	// Separate the answer from its citations and normalize heterogeneous
 	// upstream source formats into one consistent list. When no citations are
 	// present, answer == content and Sources is nil (no behavior change).
-	answer, grokSrc := sources.Split(content)
-	result := &Result{Content: answer, Model: model, Sources: sources.Merge(grokSrc, refSrc)}
-	if len(refFailures) > 0 {
-		result.Warning = formatRefFailures(refFailures)
+	answer, grokSrc := sources.Split(completion.Content)
+	// 流中的 url_citation 注解是上游对来源的权威记录：即使模型正文省略了
+	// [[n]](url) 标记（例如用户要求"只回答日期"），也能据此补齐来源列表。
+	annotated := make([]sources.Source, 0, len(completion.Citations))
+	for _, c := range completion.Citations {
+		annotated = append(annotated, sources.Source{Title: c.Title, URL: c.URL})
 	}
+	result := &Result{Content: answer, Model: model, Sources: sources.Merge(grokSrc, annotated, refSrc)}
+	var warnings []string
+	if len(refFailures) > 0 {
+		warnings = append(warnings, formatRefFailures(refFailures))
+	}
+	// 一次"搜索"却没有任何可解析来源时，把它标为可见降级（参照 GrokSearch-rs
+	// 的口径）：结果仍然返回，但调用方应把时效性结论视为未经核验。usage 里的
+	// 服务端工具计数能区分两种情形：检索根本没发生（工具未声明/未调用/上游不
+	// 支持），或检索发生了但模型正文没有落引用。
+	if len(result.Sources) == 0 {
+		switch {
+		case completion.ServerToolCallsKnown && completion.ServerToolCalls > 0:
+			warnings = append(warnings, fmt.Sprintf(UncitedSearchWarningFmt, completion.ServerToolCalls))
+		default:
+			warnings = append(warnings, NoSourcesWarning)
+		}
+	}
+	result.Warning = strings.Join(warnings, "; ")
 	return result, nil
 }
+
+// NoSourcesWarning 是答案不含任何可解析引用、且上游未报告任何服务端工具调用
+// 时附加的可见降级提示。
+const NoSourcesWarning = "answer carries no source citations and no server-side search tool call was reported; the model likely answered from training knowledge, treat time-sensitive claims as unverified"
+
+// UncitedSearchWarningFmt 用于"检索已执行（%d 次服务端工具调用）但正文没有可
+// 解析引用"的情形，提示调用方结论有检索支撑但无法逐条溯源。
+const UncitedSearchWarningFmt = "search ran (%d server-side tool calls) but the answer contains no parsable citations; sources cannot be traced per claim"
 
 // formatRefFailures renders non-fatal extra_sources tier failures into one
 // visible warning line, deduplicating provider names.

@@ -25,7 +25,8 @@ The MCP tool surface is gated by `--tools`:
 ## Design principles
 
 - **Model is user-supplied, never defaulted.** `GROK_MODEL` is required. An unavailable model fails explicitly (exit 1 / MCP `isError=true`), never silently switches.
-- **Degradation is visible.** web_fetch reports which tier produced the result; `GROK_FETCH_FALLBACK=strict` disables the low-fidelity basic-HTTP fallback.
+- **Degradation is visible.** web_fetch reports which tier produced the result; `GROK_FETCH_FALLBACK=strict` disables the low-fidelity basic-HTTP fallback; a search answer with no parsable sources carries a warning.
+- **Search tools are declared on the request.** Every search declares hosted search tools in the request `tools` array (default `web_search`, optionally `x_search`) instead of relying on upstream "implicit search"; grok2api v3's Console route only runs tools the client declares. `GROK_SEARCH_TOOLS=none` disables it.
 - **One code path.** CLI and MCP adapter share the same core packages.
 - **Resilience built-in.** Circuit breaker, bounded retry with a shared budget, per-operation timeout profiles (search 120s / fetch 30s / map 90s), upstream Retry-After honored.
 
@@ -46,6 +47,7 @@ export GROK_MODEL=grok-4.20-fast      # user-supplied, never defaulted
 # Optional
 export GROK_REQUEST_TIMEOUT=120s
 export GROK_SEARCH_PROVIDER=auto      # auto|chat|responses
+export GROK_SEARCH_TOOLS=web_search   # hosted tools declared on search requests, comma-separated; add x_search; none disables
 export GROK_FETCH_FALLBACK=full       # full|strict
 export GROK_CONCURRENCY=8             # MCP worker pool size (stdio request processing)
 export GROK_QUEUE_SIZE=64             # MCP bounded queue capacity
@@ -58,6 +60,8 @@ export FIRECRAWL_API_KEY=             # enables Firecrawl tier in fetch
 ```
 
 See `.env.example` for the complete reference.
+
+About `GROK_SEARCH_TOOLS`: the default `web_search` works on both the Console and Grok Web routes of grok2api v3; `web_search,x_search` additionally searches X (Twitter) content, but the Grok Web route rejects `x_search` (upstream 400, surfaced as-is by openscry), so only add it when `GROK_MODEL` points at a Console model (e.g. `grok-4.3`); `none` restores the legacy request shape (`model/messages/stream` only). The tools apply to `web_search` / `web_search_batch` / async search tasks only, not to `web_fetch` or `research_plan`.
 
 ## Usage
 

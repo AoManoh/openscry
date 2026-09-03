@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -73,7 +74,22 @@ const (
 	//            binary; this only gates the advertised surface.
 	// Operators choose via GROK_MCP_TOOLS or the `mcp --tools` flag.
 	DefaultMCPTools = "core"
+
+	// DefaultSearchTools 是搜索请求默认声明的托管（服务端）工具清单。
+	// grok2api v3 的 Console 路由只转发客户端显式声明的 tools，不再自动注入搜索
+	// 工具；Grok Web 路由则始终原生搜索并把 web_search 声明视为无害标记。因此
+	// 默认声明 web_search 才能让搜索在两类路由上都真正发生。x_search 不设默认：
+	// Grok Web 路由会拒绝它（上游 400），需要时通过 GROK_SEARCH_TOOLS 显式追加。
+	// 设为 none 可完全关闭声明，恢复只发 model/messages/stream 的旧请求形态。
+	DefaultSearchTools = "web_search"
+
+	// SearchToolsDisabled 是 GROK_SEARCH_TOOLS 的显式关闭值（off 为同义词）。
+	SearchToolsDisabled = "none"
 )
+
+// searchToolPattern 约束工具类型名：小写字母、数字、下划线、点、连字符。
+// 不维护类型白名单，避免在下游复制上游知识；不被支持的类型由上游显式报错。
+var searchToolPattern = regexp.MustCompile(`^[a-z0-9_.-]+$`)
 
 // Config holds the resolved runtime configuration.
 type Config struct {
@@ -115,6 +131,10 @@ type Config struct {
 	// MCPTools gates the advertised MCP tool surface ("core"|"all"); see
 	// DefaultMCPTools. The `mcp --tools` flag overrides this.
 	MCPTools string // GROK_MCP_TOOLS (default core)
+
+	// SearchTools 是每次搜索请求在 tools 数组中声明的托管工具类型（按声明顺序、
+	// 已去重）。空切片表示不声明。来源 GROK_SEARCH_TOOLS，见 DefaultSearchTools。
+	SearchTools []string
 }
 
 // Load reads configuration from the environment and validates it.
@@ -201,10 +221,50 @@ func Load() (*Config, error) {
 		cfg.MCPTools = v
 	}
 
+	tools, err := ParseSearchTools(os.Getenv("GROK_SEARCH_TOOLS"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid GROK_SEARCH_TOOLS: %w", err)
+	}
+	cfg.SearchTools = tools
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// ParseSearchTools 解析 GROK_SEARCH_TOOLS：逗号分隔的托管工具类型清单。
+// 未设置或空白时返回 DefaultSearchTools；"none"/"off" 返回空切片（显式关闭）；
+// 各项 trim 后转小写、按出现顺序去重，空项忽略；含非法字符的项 fail-loud，
+// 与 GROK_SEARCH_PROVIDER 等选项一致，绝不静默丢弃配置。
+func ParseSearchTools(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = DefaultSearchTools
+	}
+	if v := strings.ToLower(raw); v == SearchToolsDisabled || v == "off" {
+		return []string{}, nil
+	}
+	seen := make(map[string]struct{})
+	tools := make([]string, 0, 2)
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.ToLower(strings.TrimSpace(part))
+		if name == "" {
+			continue
+		}
+		if !searchToolPattern.MatchString(name) {
+			return nil, fmt.Errorf("unknown tool type %q (want comma-separated names such as web_search,x_search, or none)", strings.TrimSpace(part))
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		tools = append(tools, name)
+	}
+	if len(tools) == 0 {
+		return nil, fmt.Errorf("no tool types found in %q (use none to disable explicitly)", raw)
+	}
+	return tools, nil
 }
 
 // NormalizeToolset validates and lower-cases a tool-set selector ("core"|

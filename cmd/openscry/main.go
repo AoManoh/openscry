@@ -133,6 +133,7 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 	svc := search.NewWithOptions(client, cfg.Model, search.Options{
 		Provider:    provider,
 		RefProvider: newRefProvider(cfg),
+		Tools:       cfg.SearchTools,
 	})
 
 	to := cfg.RequestTimeout
@@ -187,6 +188,7 @@ func runMCP(args []string) int {
 	searchSvc := search.NewWithOptions(client, cfg.Model, search.Options{
 		Provider:    provider,
 		RefProvider: newRefProvider(cfg),
+		Tools:       cfg.SearchTools,
 	})
 	fetchSvc := fetch.New(client, fetch.Options{
 		Model:           cfg.Model,
@@ -253,6 +255,7 @@ func runMCP(args []string) int {
 		Tavily:              cfg.TavilyAPIKey != "",
 		Firecrawl:           cfg.FirecrawlAPIKey != "",
 		Toolset:             toolset,
+		SearchTools:         cfg.SearchTools,
 	}
 	srv.Register(mcpserver.GetConfigInfoTool(info, client.Ping))
 
@@ -286,6 +289,7 @@ func runMCP(args []string) int {
 		"provider", provider, "fetch_fallback", cfg.FetchFallback,
 		"transport", transport, "toolset", toolset,
 		"tools", tools,
+		"search_tools", strings.Join(cfg.SearchTools, ","),
 		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
 		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize,
 		"upstream_concurrency", cfg.UpstreamConcurrency)

@@ -28,6 +28,9 @@ type ConfigInfo struct {
 	Tavily              bool   `json:"tavily_enabled"`
 	Firecrawl           bool   `json:"firecrawl_enabled"`
 	Toolset             string `json:"toolset"` // core | all
+	// SearchTools 是搜索请求声明的托管工具类型（GROK_SEARCH_TOOLS）；空切片表示
+	// 不声明。暴露它是为了让调用方能直接判断"搜索为什么没有来源"。
+	SearchTools []string `json:"search_tools"`
 }
 
 // Map renders the snapshot as a JSON-friendly map (used by the well-known
@@ -49,6 +52,7 @@ func (c ConfigInfo) Map() map[string]any {
 		"tavily_enabled":       c.Tavily,
 		"firecrawl_enabled":    c.Firecrawl,
 		"toolset":              c.Toolset,
+		"search_tools":         c.searchToolsOrEmpty(),
 		"endpoint":             "/mcp",
 		"authentication":       map[string]any{"scheme": "bearer", "headers": []string{"Authorization", "X-API-Key"}},
 	}
@@ -88,4 +92,12 @@ func GetConfigInfoTool(info ConfigInfo, probe func(ctx context.Context) error) (
 		return jsonResult(out)
 	}
 	return def, handler
+}
+
+// searchToolsOrEmpty 保证 JSON 输出为 [] 而不是 null，便于调用方直接判空。
+func (c ConfigInfo) searchToolsOrEmpty() []string {
+	if c.SearchTools == nil {
+		return []string{}
+	}
+	return c.SearchTools
 }
