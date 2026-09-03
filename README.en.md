@@ -61,7 +61,7 @@ export FIRECRAWL_API_KEY=             # enables Firecrawl tier in fetch
 
 See `.env.example` for the complete reference.
 
-About `GROK_SEARCH_TOOLS`: the default `web_search` works on both the Console and Grok Web routes of grok2api v3; `web_search,x_search` additionally searches X (Twitter) content, but the Grok Web route rejects `x_search` (upstream 400, surfaced as-is by openscry), so only add it when `GROK_MODEL` points at a Console model (e.g. `grok-4.3`); `none` restores the legacy request shape (`model/messages/stream` only). The tools apply to `web_search` / `web_search_batch` / async search tasks only, not to `web_fetch` or `research_plan`.
+About `GROK_SEARCH_TOOLS`: the default `web_search` works on both the Console and Grok Web routes of grok2api v3; `web_search,x_search` additionally searches X (Twitter) content, but the Grok Web route rejects `x_search` (upstream 400, surfaced as-is by openscry), so only add it when `GROK_MODEL` points at a Console model (e.g. `grok-4.3`); `none` restores the legacy request shape (`model/messages/stream` only). The tools apply to `web_search` / `web_search_batch` / async search tasks; the Grok tier of `web_fetch` declares `web_search` only when the list contains it (xAI's web_search tool group includes browse_page / open_page, which is what lets the model actually open the target URL), and `research_plan` stays tool-free by design.
 
 ## Usage
 

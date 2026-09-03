@@ -197,6 +197,7 @@ func runMCP(args []string) int {
 		TavilyAPIURL:    cfg.TavilyAPIURL,
 		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
 		FirecrawlAPIURL: cfg.FirecrawlAPIURL,
+		Tools:           cfg.FetchTools(),
 	})
 
 	srv := mcpserver.NewWithConfig(os.Stdin, os.Stdout, logger, mcpserver.EngineConfig{
@@ -349,6 +350,7 @@ usage: openscry fetch [--timeout D] <url>`)
 		TavilyAPIURL:    cfg.TavilyAPIURL,
 		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
 		FirecrawlAPIURL: cfg.FirecrawlAPIURL,
+		Tools:           cfg.FetchTools(),
 	})
 
 	ctx := context.Background()

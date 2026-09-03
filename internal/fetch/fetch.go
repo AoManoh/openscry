@@ -47,6 +47,10 @@ type Service struct {
 	tavilyURL    string
 	firecrawlKey string
 	firecrawlURL string
+	// tools 是 Grok 层请求声明的托管工具（通常只有 web_search）。xAI 的 web_search
+	// 服务端工具组含 browse_page / open_page，模型借此才能真正打开目标 URL，
+	// 否则 Console 路由下只能回复 FetchFailureSentinel。
+	tools []string
 }
 
 // Options configures the fetch service. The Tavily and Firecrawl tiers are
@@ -60,6 +64,9 @@ type Options struct {
 	TavilyAPIURL    string
 	FirecrawlAPIKey string
 	FirecrawlAPIURL string
+	// Tools 是 Grok 层声明的托管工具类型；接线时传入 config.Config.FetchTools()。
+	// 空表示不声明，保持历史请求形态。
+	Tools []string
 }
 
 // New builds a fetch Service over the given grok client.
@@ -74,6 +81,7 @@ func New(client *grok.Client, opt Options) *Service {
 		tavilyURL:    strings.TrimRight(firstNonEmpty(opt.TavilyAPIURL, "https://api.tavily.com"), "/"),
 		firecrawlKey: strings.TrimSpace(opt.FirecrawlAPIKey),
 		firecrawlURL: strings.TrimRight(firstNonEmpty(opt.FirecrawlAPIURL, "https://api.firecrawl.dev"), "/"),
+		tools:        append([]string(nil), opt.Tools...),
 	}
 }
 
@@ -162,7 +170,7 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	// Tier 3: Grok fetch via grok2api (FetchPrompt asks the model for the
 	// page's structured Markdown). Reuses the shared streaming primitive.
 	if s.client != nil {
-		content, err := s.client.Complete(extractorCtx, s.model, prompt.FetchPrompt, prompt.FetchUserContent(target))
+		content, err := s.client.CompleteWithTools(extractorCtx, s.model, prompt.FetchPrompt, prompt.FetchUserContent(target), s.tools)
 		if err == nil && strings.Contains(content, prompt.FetchFailureSentinel) {
 			// The model signalled it could not retrieve the page (see
 			// prompt.FetchFailureSentinel). Treat this as a tier failure so

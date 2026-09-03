@@ -6,12 +6,12 @@ package planner
 
 // Plan is the structured output of a research plan generation.
 type Plan struct {
-	Intent    Intent     `json:"intent"`
-	Complexity Complexity `json:"complexity"`
-	SubQueries []SubQuery `json:"sub_queries"`
+	Intent      Intent       `json:"intent"`
+	Complexity  Complexity   `json:"complexity"`
+	SubQueries  []SubQuery   `json:"sub_queries"`
 	SearchTerms []SearchTerm `json:"search_terms"`
-	Execution  Execution  `json:"execution"`
-	Strategies Strategies `json:"strategies"`
+	Execution   Execution    `json:"execution"`
+	Strategies  Strategies   `json:"strategies"`
 }
 
 // Intent captures the core question analysis.
@@ -24,18 +24,18 @@ type Intent struct {
 
 // Complexity assesses the research scope.
 type Complexity struct {
-	Level             int    `json:"level"` // 1-3
-	EstimatedQueries  int    `json:"estimated_queries"`
-	EstimatedCalls    int    `json:"estimated_calls"`
-	Justification     string `json:"justification"`
+	Level            int    `json:"level"` // 1-3
+	EstimatedQueries int    `json:"estimated_queries"`
+	EstimatedCalls   int    `json:"estimated_calls"`
+	Justification    string `json:"justification"`
 }
 
 // SubQuery is one decomposed aspect of the research question.
 type SubQuery struct {
-	ID             string `json:"id"`              // e.g. "sq1"
+	ID             string `json:"id"` // e.g. "sq1"
 	Goal           string `json:"goal"`
 	ExpectedOutput string `json:"expected_output"`
-	Boundary       string `json:"boundary"`        // what this excludes
+	Boundary       string `json:"boundary"` // what this excludes
 	DependsOn      string `json:"depends_on,omitempty"`
 	ToolHint       string `json:"tool_hint,omitempty"` // web_search|web_fetch|web_map
 }

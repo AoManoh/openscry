@@ -61,7 +61,7 @@ export FIRECRAWL_API_KEY=             # 启用 fetch 的 Firecrawl 级
 
 完整参考见 `.env.example`。
 
-`GROK_SEARCH_TOOLS` 说明：默认 `web_search`，对 grok2api v3 的 Console 与 Grok Web 路由都可用；`web_search,x_search` 额外检索 X（Twitter）内容，但 Grok Web 路由不支持 `x_search`（上游返回 400，openscry 原样透出），只在 `GROK_MODEL` 指向 Console 模型（如 `grok-4.3`）时追加；`none` 恢复只发 `model/messages/stream` 的旧请求形态。工具仅作用于 `web_search` / `web_search_batch` / 异步搜索任务，不影响 `web_fetch` 与 `research_plan`。
+`GROK_SEARCH_TOOLS` 说明：默认 `web_search`，对 grok2api v3 的 Console 与 Grok Web 路由都可用；`web_search,x_search` 额外检索 X（Twitter）内容，但 Grok Web 路由不支持 `x_search`（上游返回 400，openscry 原样透出），只在 `GROK_MODEL` 指向 Console 模型（如 `grok-4.3`）时追加；`none` 恢复只发 `model/messages/stream` 的旧请求形态。工具作用于 `web_search` / `web_search_batch` / 异步搜索任务；`web_fetch` 的 Grok 层只在清单含 `web_search` 时声明 `web_search`（xAI 的 web_search 工具组含 browse_page / open_page，模型借此才能真正打开目标 URL），`research_plan` 按离线设计不带工具。
 
 ## 使用
 

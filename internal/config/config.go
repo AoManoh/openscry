@@ -267,6 +267,19 @@ func ParseSearchTools(raw string) ([]string, error) {
 	return tools, nil
 }
 
+// FetchTools 返回 web_fetch 的 Grok 层应声明的托管工具：仅当 GROK_SEARCH_TOOLS
+// 含 web_search 时返回 ["web_search"]，否则为空。页面抓取只需要 web_search 工具组
+// 里的 browse_page / open_page；x_search 等对抓取无意义，且会被 Grok Web 路由拒绝，
+// 因此不透传，避免一次无关的 400 让 Grok 层白白失败。
+func (c *Config) FetchTools() []string {
+	for _, name := range c.SearchTools {
+		if name == "web_search" {
+			return []string{"web_search"}
+		}
+	}
+	return nil
+}
+
 // NormalizeToolset validates and lower-cases a tool-set selector ("core"|
 // "all"). It is shared by env loading and the `mcp --tools` flag so both reject
 // an unknown value the same way (fail loud, never silently fall back).
