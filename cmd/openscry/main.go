@@ -161,7 +161,9 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 	if len(res.Sources) > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d sources:\n", len(res.Sources))
 		for i, s := range res.Sources {
-			if s.Title != "" {
+			if s.Origin != "" {
+				fmt.Fprintf(os.Stderr, "  [%d] %s — %s (via %s)\n", i+1, s.Title, s.URL, s.Origin)
+			} else if s.Title != "" {
 				fmt.Fprintf(os.Stderr, "  [%d] %s — %s\n", i+1, s.Title, s.URL)
 			} else {
 				fmt.Fprintf(os.Stderr, "  [%d] %s\n", i+1, s.URL)

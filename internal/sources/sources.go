@@ -24,6 +24,10 @@ type Source struct {
 	Title       string `json:"title,omitempty"`
 	URL         string `json:"url"`
 	Description string `json:"description,omitempty"`
+	// Origin 标注来源出处：空值表示来自 Grok 答案本身（正文内联引用 / 尾部列表 / 上游
+	// url_citation 注解）；"tavily" / "firecrawl" 表示由 extra_sources 的参考检索补充。
+	// 暴露它是为了让调用方与评测能区分"模型引用了什么"与"旁路检索补了什么"。
+	Origin string `json:"origin,omitempty"`
 }
 
 var (

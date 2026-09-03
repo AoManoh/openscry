@@ -75,10 +75,15 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 			b.WriteString(fmt.Sprintf("\n\n---\n**Sources (%d):**\n", len(res.Sources)))
 			for i, s := range res.Sources {
 				if s.Title != "" {
-					b.WriteString(fmt.Sprintf("%d. [%s](%s)\n", i+1, s.Title, s.URL))
+					b.WriteString(fmt.Sprintf("%d. [%s](%s)", i+1, s.Title, s.URL))
 				} else {
-					b.WriteString(fmt.Sprintf("%d. %s\n", i+1, s.URL))
+					b.WriteString(fmt.Sprintf("%d. %s", i+1, s.URL))
 				}
+				// extra_sources 补充的来源标注出处，与模型自身引用区分开
+				if s.Origin != "" {
+					b.WriteString(" — via " + s.Origin)
+				}
+				b.WriteString("\n")
 			}
 			text = b.String()
 		}

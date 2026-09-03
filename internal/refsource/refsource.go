@@ -187,6 +187,7 @@ func (p *Provider) tavilySearch(ctx context.Context, query string, n int) ([]sou
 			Title:       strings.TrimSpace(r.Title),
 			URL:         strings.TrimSpace(r.URL),
 			Description: strings.TrimSpace(r.Content),
+			Origin:      "tavily",
 		})
 	}
 	return src, nil
@@ -212,20 +213,39 @@ func (p *Provider) firecrawlSearch(ctx context.Context, query string, n int) ([]
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("firecrawl status %d", resp.StatusCode)
 	}
+	// Firecrawl /v1/search 返回 data: [ {url,title,description} ]，/v2/search 返回
+	// data: { web: [...] }。两种形态都接受，避免因 API 版本差异让整个 Firecrawl 层静默失效
+	// （2026-09-03 评测发现：此前只按 v2 形态解析，默认 v1 端点下每次都解析失败）。
 	var out struct {
-		Data struct {
-			Web []struct {
-				Title       string `json:"title"`
-				URL         string `json:"url"`
-				Description string `json:"description"`
-			} `json:"web"`
-		} `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
+	type item struct {
+		Title       string `json:"title"`
+		URL         string `json:"url"`
+		Description string `json:"description"`
+	}
+	var items []item
+	trimmed := bytes.TrimSpace(out.Data)
+	switch {
+	case len(trimmed) == 0 || string(trimmed) == "null":
+	case trimmed[0] == '[':
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return nil, fmt.Errorf("firecrawl v1 search payload: %w", err)
+		}
+	default:
+		var v2 struct {
+			Web []item `json:"web"`
+		}
+		if err := json.Unmarshal(trimmed, &v2); err != nil {
+			return nil, fmt.Errorf("firecrawl v2 search payload: %w", err)
+		}
+		items = v2.Web
+	}
 	var src []sources.Source
-	for _, r := range out.Data.Web {
+	for _, r := range items {
 		if strings.TrimSpace(r.URL) == "" {
 			continue
 		}
@@ -233,6 +253,7 @@ func (p *Provider) firecrawlSearch(ctx context.Context, query string, n int) ([]
 			Title:       strings.TrimSpace(r.Title),
 			URL:         strings.TrimSpace(r.URL),
 			Description: strings.TrimSpace(r.Description),
+			Origin:      "firecrawl",
 		})
 	}
 	return src, nil
