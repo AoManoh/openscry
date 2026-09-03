@@ -78,19 +78,19 @@ About `GROK_SEARCH_TOOLS`: the default `web_search` works on both the Console an
 ./openscry mcp --tools all              # expose all 10 tools (incl. async task family)
 ./openscry mcp --http 127.0.0.1:8080    # serve over HTTP JSON-RPC (requires GROK_HTTP_API_KEY)
 
-./openscry version
+./openscry version   # prints the version from build info: release tag (v0.2.0), local pseudo-version or devel
 ```
 
 ## IDE MCP configuration
 
-Add openscry under `mcpServers` in your `mcp_config.json`. **Online mode is recommended** — no local build needed, `go run` pulls the source from GitHub and compiles it automatically:
+Add openscry under `mcpServers` in your `mcp_config.json`. **Online mode is recommended** — no local build needed, `go run` pulls the source from GitHub and compiles it automatically. Pin a release tag (such as `@v0.2.0`) rather than `@main`; to upgrade, change the tag and restart the session (see [CHANGELOG.md](CHANGELOG.md)):
 
 ```json
 {
   "mcpServers": {
     "openscry-mcp": {
       "command": "go",
-      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@main", "mcp", "--tools", "all"],
+      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@v0.2.0", "mcp", "--tools", "all"],
       "env": {
         "GROK_API_URL": "https://your-host/v1",
         "GROK_API_KEY": "your-key",
