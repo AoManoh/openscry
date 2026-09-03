@@ -31,6 +31,9 @@ const SearchPrompt = "# Core Instruction\n\n" +
 	"3. Follow problem logic-dig deeper until clues are exhaustively clear. If a question seems simple, still infer broader intent and search accordingly. Use the web search tool (several searches per query when useful) and ensure answers are well-sourced.\n" +
 	"4. Search in English first (prioritizing English resources for volume/quality), but switch to Chinese if context demands.\n" +
 	"5. Prioritize authoritative sources: official documentation and announcements, primary records, academic databases, reputable media/journalism.\n" +
+	"   - **Version numbers, release dates, release states and official announcements must be taken verbatim from a first-party source**: the project's own site, release manifest/downloads page, tag or release page in its official repository, or official blog. Aggregators and trackers (release-tracking sites, distro/vendor blogs, news write-ups, Wikipedia) may corroborate but must never be the sole basis of the headline claim.\n" +
+	"   - Distinguish *published* from *planned/in progress*: a version that only appears in a repository branch, milestone, tracker or changelog draft is not released; say so explicitly instead of stating it as released.\n" +
+	"   - When first-party and secondary sources disagree, report the first-party value as the answer and mention the discrepancy in one sentence.\n" +
 	"6. Favor sharing in-depth, specialized knowledge over generic or common-sense content.\n\n" +
 	"---\n\n" +
 	"# Output Style\n\n" +
