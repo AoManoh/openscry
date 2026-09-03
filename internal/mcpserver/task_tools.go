@@ -27,6 +27,10 @@ func searchResultMap(res *search.Result) map[string]any {
 	m := map[string]any{
 		"content":       res.Content,
 		"sources_count": len(res.Sources),
+		"elapsed_s":     roundSeconds(res.Elapsed),
+	}
+	if res.ServerToolCallsKnown {
+		m["server_tool_calls"] = res.ServerToolCalls
 	}
 	if len(res.Sources) > 0 {
 		m["sources"] = res.Sources
@@ -35,6 +39,11 @@ func searchResultMap(res *search.Result) map[string]any {
 		m["warning"] = res.Warning
 	}
 	return m
+}
+
+// roundSeconds 以 0.1s 精度输出耗时，避免 JSON 里出现过长的浮点尾数。
+func roundSeconds(d time.Duration) float64 {
+	return float64(int64(d.Seconds()*10+0.5)) / 10
 }
 
 // batchItemsResult renders batch items into a JSON-friendly result map.
@@ -48,6 +57,10 @@ func batchItemsResult(items []search.BatchItem) map[string]any {
 		if it.Content != "" {
 			entry["content"] = it.Content
 			entry["sources_count"] = len(it.Sources)
+			entry["elapsed_s"] = roundSeconds(it.Elapsed)
+			if it.ServerToolCallsKnown {
+				entry["server_tool_calls"] = it.ServerToolCalls
+			}
 		}
 		if len(it.Sources) > 0 {
 			entry["sources"] = it.Sources

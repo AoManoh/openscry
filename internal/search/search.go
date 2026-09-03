@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -125,6 +126,13 @@ type Result struct {
 	// Grok answer succeeded but one or more extra_sources tiers failed. The
 	// primary result is still valid; the warning makes the gap visible.
 	Warning string
+	// ServerToolCalls 是上游报告的服务端托管工具调用次数（web_search 等）；
+	// ServerToolCallsKnown 为 false 表示上游未提供该字段（如 Grok Web 路由）。
+	// 暴露它是为了让调用方与评测能直接判断"检索是否真的发生"。
+	ServerToolCalls      int
+	ServerToolCallsKnown bool
+	// Elapsed 是本次搜索（含重试）的端到端耗时，由服务层计时，调用方无需再括号计时。
+	Elapsed time.Duration
 }
 
 // Search executes one web search through the resilience layer. The model is
@@ -176,6 +184,7 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 		}()
 	}
 
+	started := time.Now()
 	completion, err := resilience.Retry(opCtx, s.retryOpts, func(c context.Context) (*grok.Completion, error) {
 		var out *grok.Completion
 		gerr := s.breaker.Guard(func() error {
@@ -197,11 +206,21 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	answer, grokSrc := sources.Split(completion.Content)
 	// 流中的 url_citation 注解是上游对来源的权威记录：即使模型正文省略了
 	// [[n]](url) 标记（例如用户要求"只回答日期"），也能据此补齐来源列表。
+	// 上游 url_citation 的 title 常常只是引用序号（"1"、"2"），不是页面标题，写进
+	// Title 会被渲染成 [2](url) 这样的畸形条目，因此纯数字 title 一律丢弃。
 	annotated := make([]sources.Source, 0, len(completion.Citations))
 	for _, c := range completion.Citations {
-		annotated = append(annotated, sources.Source{Title: c.Title, URL: c.URL})
+		title := strings.TrimSpace(c.Title)
+		if numericTitle.MatchString(title) {
+			title = ""
+		}
+		annotated = append(annotated, sources.Source{Title: title, URL: c.URL})
 	}
-	result := &Result{Content: answer, Model: model, Sources: sources.Merge(grokSrc, annotated, refSrc)}
+	merged := sources.Merge(grokSrc, annotated, refSrc)
+	// 让正文里的 [[n]](url) 编号与最终 Sources 列表的序号一致，下游才能按编号回溯来源。
+	answer = renumberInlineCitations(answer, merged)
+	result := &Result{Content: answer, Model: model, Sources: merged, Elapsed: time.Since(started),
+		ServerToolCalls: completion.ServerToolCalls, ServerToolCallsKnown: completion.ServerToolCallsKnown}
 	var warnings []string
 	if len(refFailures) > 0 {
 		warnings = append(warnings, formatRefFailures(refFailures))
@@ -220,6 +239,34 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	}
 	result.Warning = strings.Join(warnings, "; ")
 	return result, nil
+}
+
+var (
+	numericTitle   = regexp.MustCompile(`^\d+$`)
+	inlineCitation = regexp.MustCompile(`\[\[(\d+)\]\]\((https?://[^)\s]+)\)`)
+)
+
+// renumberInlineCitations 把正文中 [[n]](url) 的 n 改写为 url 在最终来源列表中的
+// 1 起始序号；列表中找不到的 URL 保持原样。模型自行编号时常不连续或与尾部列表错位，
+// 统一以合并后的列表为准。
+func renumberInlineCitations(answer string, srcs []sources.Source) string {
+	if len(srcs) == 0 {
+		return answer
+	}
+	index := make(map[string]int, len(srcs))
+	for i, s := range srcs {
+		index[s.URL] = i + 1
+	}
+	return inlineCitation.ReplaceAllStringFunc(answer, func(m string) string {
+		sub := inlineCitation.FindStringSubmatch(m)
+		if n, ok := index[strings.TrimRight(sub[2], ".,;:!?")]; ok {
+			return fmt.Sprintf("[[%d]](%s)", n, sub[2])
+		}
+		if n, ok := index[sub[2]]; ok {
+			return fmt.Sprintf("[[%d]](%s)", n, sub[2])
+		}
+		return m
+	})
 }
 
 // NoSourcesWarning 是答案不含任何可解析引用、且上游未报告任何服务端工具调用

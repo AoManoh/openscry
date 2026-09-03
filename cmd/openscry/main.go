@@ -152,6 +152,11 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 	if res.Warning != "" {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", res.Warning)
 	}
+	if res.ServerToolCallsKnown {
+		fmt.Fprintf(os.Stderr, "tools: %d server-side calls; elapsed: %.1fs\n", res.ServerToolCalls, res.Elapsed.Seconds())
+	} else {
+		fmt.Fprintf(os.Stderr, "elapsed: %.1fs\n", res.Elapsed.Seconds())
+	}
 	// Sources go to stderr so stdout stays clean for piping the answer.
 	if len(res.Sources) > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d sources:\n", len(res.Sources))

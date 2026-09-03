@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AoManoh/openscry/internal/sources"
 )
@@ -28,6 +29,10 @@ type BatchItem struct {
 	Sources []sources.Source
 	Warning string
 	Err     string
+	// 与 Result 相同的可观测字段，供批量/异步结果逐项暴露。
+	ServerToolCalls      int
+	ServerToolCallsKnown bool
+	Elapsed              time.Duration
 }
 
 // BatchOptions are applied to every sub-query in a batch. Per-query platform
@@ -92,6 +97,9 @@ func (s *Service) BatchSearch(ctx context.Context, queries []string, opt BatchOp
 			items[idx].Content = res.Content
 			items[idx].Sources = res.Sources
 			items[idx].Warning = res.Warning
+			items[idx].ServerToolCalls = res.ServerToolCalls
+			items[idx].ServerToolCallsKnown = res.ServerToolCallsKnown
+			items[idx].Elapsed = res.Elapsed
 		}(i, query)
 	}
 	wg.Wait()

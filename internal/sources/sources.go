@@ -59,9 +59,10 @@ func Split(text string) (string, []Source) {
 }
 
 // Merge concatenates multiple source lists, deduplicating by URL while
-// preserving first-seen order.
+// preserving first-seen order. 重复 URL 的后到项若带有 Title / Description 而先到项
+// 缺失，则回填到先到项：内联引用只有 URL，标题往往来自后面的注解或尾部列表。
 func Merge(lists ...[]Source) []Source {
-	seen := make(map[string]struct{})
+	seen := make(map[string]int)
 	var merged []Source
 	for _, list := range lists {
 		for _, item := range list {
@@ -69,10 +70,16 @@ func Merge(lists ...[]Source) []Source {
 			if url == "" {
 				continue
 			}
-			if _, dup := seen[url]; dup {
+			if idx, dup := seen[url]; dup {
+				if merged[idx].Title == "" && strings.TrimSpace(item.Title) != "" {
+					merged[idx].Title = strings.TrimSpace(item.Title)
+				}
+				if merged[idx].Description == "" && strings.TrimSpace(item.Description) != "" {
+					merged[idx].Description = strings.TrimSpace(item.Description)
+				}
 				continue
 			}
-			seen[url] = struct{}{}
+			seen[url] = len(merged)
 			item.URL = url
 			merged = append(merged, item)
 		}

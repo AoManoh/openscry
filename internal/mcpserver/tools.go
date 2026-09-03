@@ -86,6 +86,11 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 		if res.Model != "" {
 			text += "\n\n> model: " + res.Model
 		}
+		// 服务端工具调用次数与耗时：让 agent 与评测无需旁路手段即可判断检索是否发生、花了多久
+		if res.ServerToolCallsKnown {
+			text += fmt.Sprintf("\n> tools: %d server-side calls", res.ServerToolCalls)
+		}
+		text += fmt.Sprintf("\n> elapsed: %.1fs", res.Elapsed.Seconds())
 		return &ToolCallResult{
 			Content: []ContentItem{{Type: "text", Text: text}},
 		}, nil

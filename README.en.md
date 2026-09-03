@@ -26,6 +26,7 @@ The MCP tool surface is gated by `--tools`:
 
 - **Model is user-supplied, never defaulted.** `GROK_MODEL` is required. An unavailable model fails explicitly (exit 1 / MCP `isError=true`), never silently switches.
 - **Degradation is visible.** web_fetch reports which tier produced the result; `GROK_FETCH_FALLBACK=strict` disables the low-fidelity basic-HTTP fallback; a search answer with no parsable sources carries a warning.
+- **Retrieval is observable.** `web_search` results end with `> model:`, `> tools: N server-side calls` (hosted tool calls reported by the upstream; absent when the upstream does not report it) and `> elapsed:`; batch/async results carry `server_tool_calls` and `elapsed_s`; inline `[[n]](url)` numbering matches the Sources list.
 - **Search tools are declared on the request.** Every search declares hosted search tools in the request `tools` array (default `web_search`, optionally `x_search`) instead of relying on upstream "implicit search"; grok2api v3's Console route only runs tools the client declares. `GROK_SEARCH_TOOLS=none` disables it.
 - **One code path.** CLI and MCP adapter share the same core packages.
 - **Resilience built-in.** Circuit breaker, bounded retry with a shared budget, per-operation timeout profiles (search 120s / fetch 30s / map 90s), upstream Retry-After honored.

@@ -340,16 +340,20 @@ func classifyTransportError(ctx context.Context, err error) error {
 }
 
 func classifyStatusError(status int, body, retryAfter string) error {
-	snippet := strings.TrimSpace(body)
-	if len(snippet) > 500 {
-		snippet = snippet[:500]
-	}
+	snippet := errorSnippet(body)
 	ra := parseRetryAfter(retryAfter)
 	switch {
 	case status == http.StatusTooManyRequests:
 		return &Error{Code: CodeRateLimit, Status: status, Message: "rate limited: " + snippet, Retryable: true, RetryAfter: ra}
-	case status == http.StatusBadRequest || status == http.StatusNotFound:
+	case status == http.StatusNotFound:
 		return &Error{Code: CodeModelUnavailable, Status: status, Message: "model or request rejected: " + snippet}
+	case status == http.StatusBadRequest:
+		// 400 里只有 model_not_found 一类属于"模型不可用"，其余（invalid_tools、参数错误）
+		// 归为 invalid_request，避免把请求形态问题误报成模型问题。
+		if code := upstreamErrorCode(snippet); code == "" || strings.Contains(code, "model") {
+			return &Error{Code: CodeModelUnavailable, Status: status, Message: "model or request rejected: " + snippet}
+		}
+		return &Error{Code: CodeInvalidRequest, Status: status, Message: "request rejected by upstream: " + snippet}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return &Error{Code: CodeUpstreamStatus, Status: status, Message: "auth error: " + snippet}
 	case status >= 500:
@@ -357,6 +361,40 @@ func classifyStatusError(status int, body, retryAfter string) error {
 	default:
 		return &Error{Code: CodeUpstreamStatus, Status: status, Message: "unexpected status: " + snippet}
 	}
+}
+
+// errorSnippet 从上游错误响应体中截取可读片段：grok2api 在流式请求出错时会在 JSON
+// 错误对象后继续追加 SSE 帧（"data: {...}" / "data: [DONE]"），这些帧对调用方没有
+// 信息量，只保留第一个 JSON 对象；非 JSON 响应体保留前 500 字节。
+func errorSnippet(body string) string {
+	snippet := strings.TrimSpace(body)
+	if strings.HasPrefix(snippet, "{") {
+		var first json.RawMessage
+		dec := json.NewDecoder(strings.NewReader(snippet))
+		if dec.Decode(&first) == nil {
+			snippet = strings.TrimSpace(string(first))
+		}
+	}
+	if idx := strings.Index(snippet, "\ndata:"); idx > 0 {
+		snippet = strings.TrimSpace(snippet[:idx])
+	}
+	if len(snippet) > 500 {
+		snippet = snippet[:500]
+	}
+	return snippet
+}
+
+// upstreamErrorCode 提取 OpenAI 风格错误体 {"error":{"code":...}} 中的 code，失败返回空串。
+func upstreamErrorCode(snippet string) string {
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(snippet), &payload) != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(payload.Error.Code))
 }
 
 // parseRetryAfter parses an HTTP Retry-After header value, which may be either

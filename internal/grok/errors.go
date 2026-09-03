@@ -17,6 +17,9 @@ const (
 	// rejected (e.g. HTTP 400/404). It is NOT retryable and MUST NOT
 	// trigger an automatic switch to another model.
 	CodeModelUnavailable Code = "model_unavailable"
+	// CodeInvalidRequest 表示上游以 HTTP 400 拒绝了请求本身（如不支持的 tools 类型、
+	// 参数非法），与"模型不可用"是两类不同的问题，分开归类便于调用方判断该改什么。
+	CodeInvalidRequest Code = "invalid_request"
 	// CodeUpstreamStatus is a non-success HTTP status not otherwise
 	// classified (auth, 5xx, unexpected).
 	CodeUpstreamStatus Code = "upstream_status"

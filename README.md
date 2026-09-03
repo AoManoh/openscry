@@ -26,6 +26,7 @@ MCP 工具面通过 `--tools` 分级：
 
 - **模型由用户指定，绝不默认。** `GROK_MODEL` 必填；不可用的模型显式失败（exit 1 / MCP `isError=true`），绝不静默切换到其他模型。
 - **降级可见。** web_fetch 报告结果由哪一级产出；`GROK_FETCH_FALLBACK=strict` 完全禁用低保真的 basic-HTTP 回退；搜索答案解析不出任何来源时附带 warning。
+- **检索可观测。** `web_search` 结果尾部附 `> model:`、`> tools: N server-side calls`（上游报告的托管工具调用次数，缺失表示上游未提供）与 `> elapsed:`；批量/异步结果含 `server_tool_calls`、`elapsed_s` 字段；正文内联引用 `[[n]](url)` 的 n 与 Sources 列表序号一致。
 - **搜索工具由请求显式声明。** 每次搜索都在请求的 `tools` 数组声明托管搜索工具（默认 `web_search`，可加 `x_search`），不依赖上游"自动搜索"；grok2api v3 的 Console 路由只执行客户端声明的工具。`GROK_SEARCH_TOOLS=none` 可关闭。
 - **单一代码路径。** CLI 与 MCP 适配层共用同一套核心包（`internal/search` / `fetch` / `mapper` / `planner`）。
 - **内建弹性。** 熔断器、共享预算的有界重试、分操作超时档（search 120s / fetch 30s / map 90s）、尊重上游 Retry-After。

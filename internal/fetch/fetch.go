@@ -178,6 +178,10 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 			// (strict), rather than accepting failure-narration as content.
 			err = fmt.Errorf("grok tier: model reported page unavailable")
 		}
+		if err == nil && strings.Contains(content, prompt.FetchPartialSentinel) {
+			// 模型承认只拿到部分正文：残缺内容不能当成功返回，按该层失败处理。
+			err = fmt.Errorf("grok tier: model reported partial content")
+		}
 		if err == nil && strings.TrimSpace(content) != "" {
 			return &Result{URL: target, Content: content, Tier: "grok", Model: s.model}, nil
 		}

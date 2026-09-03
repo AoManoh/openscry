@@ -60,6 +60,11 @@ func TimeContext() string {
 // is an openscry addition beyond the Python baseline.
 const FetchFailureSentinel = "OPENSCRY_FETCH_UNAVAILABLE"
 
+// FetchPartialSentinel 是模型在只拿到部分正文（页面过长被截断、仅抓到部分章节）时
+// 必须在最后一行单独输出的标记。抓取层据此把"看起来成功但残缺"的结果当作该层失败，
+// 继续降级（full）或显式失败（strict），而不是把复述片段当完整页面返回。
+const FetchPartialSentinel = "OPENSCRY_FETCH_PARTIAL"
+
 // FetchPrompt steers the model to fetch a URL and return its content as
 // faithful, structured Markdown (no summarization). Ported from the Python
 // baseline (grok_search/utils.py:fetch_prompt); the original's check/cross
@@ -105,7 +110,8 @@ const FetchPrompt = "# Profile: Web Content Fetcher\n\n" +
 	"- 如果无法获取目标网页的真实内容（域名解析失败、页面不存在/404、超时、被拒绝访问，或任何原因导致无法取得真实页面内容），\n" +
 	"  必须只输出以下标记本身，不要附加任何解释、道歉、推测或占位内容：\n" +
 	"  " + FetchFailureSentinel + "\n" +
-	"- 严禁在无法真正获取页面时编造或想象网页内容。\n\n" +
+	"- 严禁在无法真正获取页面时编造或想象网页内容。\n" +
+	"- 如果只获取到部分正文（页面过长被截断、只读到部分章节、无法确认已覆盖全部内容），先输出已获取的内容，然后在**最后一行单独输出** `OPENSCRY_FETCH_PARTIAL`；严禁用“内容仍在继续”之类的描述代替缺失章节。\n\n" +
 	"---\n\n" +
 	"## Initialization\n\n" +
 	"当接收到 URL 时：\n" +
