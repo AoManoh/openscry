@@ -96,6 +96,13 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 			text += fmt.Sprintf("\n> tools: %d server-side calls", res.ServerToolCalls)
 		}
 		text += fmt.Sprintf("\n> elapsed: %.1fs", res.Elapsed.Seconds())
+		// extra_sources 结算：要了几条、实际新增几条、几条与模型引用重复、哪家失败
+		if r := res.ExtraSources; r != nil {
+			text += fmt.Sprintf("\n> extra_sources: requested %d, added %d, %d duplicated model sources", r.Requested, r.Added, r.Duplicates)
+			if len(r.Failed) > 0 {
+				text += fmt.Sprintf(", failed: %s", strings.Join(r.Failed, ","))
+			}
+		}
 		return &ToolCallResult{
 			Content: []ContentItem{{Type: "text", Text: text}},
 		}, nil
@@ -151,6 +158,9 @@ func WebFetchTool(svc *fetch.Service) (Tool, ToolHandler) {
 		// Prefix a non-rendering HTML comment so the consumer can see which
 		// tier produced the content (e.g. low-fidelity "http" vs "grok").
 		header := fmt.Sprintf("<!-- openscry web_fetch: tier=%s url=%s -->\n", res.Tier, res.URL)
+		if res.FetchedURL != "" && res.FetchedURL != res.URL {
+			header = fmt.Sprintf("<!-- openscry web_fetch: tier=%s url=%s fetched=%s -->\n", res.Tier, res.URL, res.FetchedURL)
+		}
 		return &ToolCallResult{
 			Content: []ContentItem{{Type: "text", Text: header + res.Content}},
 		}, nil
@@ -315,12 +325,17 @@ func ResearchPlanTool(svc *planner.Service) (Tool, ToolHandler) {
 			defer cancel()
 		}
 
+		started := time.Now()
 		plan, err := svc.Plan(ctx, question)
 		if err != nil {
 			return nil, err
 		}
 
-		out, _ := json.Marshal(plan)
+		// 与搜索结果一样暴露耗时，评测与调用方无需旁路计时
+		out, _ := json.Marshal(struct {
+			*planner.Plan
+			ElapsedS float64 `json:"elapsed_s"`
+		}{plan, roundSeconds(time.Since(started))})
 		return &ToolCallResult{
 			Content: []ContentItem{{Type: "text", Text: string(out)}},
 		}, nil

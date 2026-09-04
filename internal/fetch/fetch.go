@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -91,6 +92,25 @@ type Result struct {
 	Content string
 	Tier    string // which extractor produced the content: tavily|firecrawl|grok|http
 	Model   string // set only when Tier == "grok"
+	// FetchedURL 是实际抓取的地址；与 URL 不同时表示做过改写（如 GitHub blob -> raw）。
+	FetchedURL string
+}
+
+var githubBlobPattern = regexp.MustCompile(`^https?://(?:www\.)?github\.com/([^/\s]+)/([^/\s]+)/(?:blob|raw)/([^/\s]+)/(.+)$`)
+
+// RewriteGitHubBlobURL 把 github.com/{owner}/{repo}/blob|raw/{ref}/{path} 改写为
+// raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}；其它 URL 原样返回。片段
+// 标识（#L10-L20）会被去掉，因为 raw 文件没有行锚点。
+func RewriteGitHubBlobURL(raw string) string {
+	m := githubBlobPattern.FindStringSubmatch(raw)
+	if m == nil {
+		return raw
+	}
+	path := m[4]
+	if i := strings.IndexAny(path, "#"); i >= 0 {
+		path = path[:i]
+	}
+	return "https://raw.githubusercontent.com/" + m[1] + "/" + m[2] + "/" + m[3] + "/" + path
 }
 
 // Fetch retrieves rawURL's content as Markdown, trying each tier in order
@@ -104,6 +124,11 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	if u, err := url.Parse(target); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("fetch: invalid url %q (need an absolute http/https URL)", target)
 	}
+	// GitHub 的 blob 页面是带行号的渲染骨架，各抓取层拿到的都是页面壳而不是文件内容；
+	// 改写为 raw.githubusercontent.com 直接取文件原文。Result.URL 仍报告调用方给的地址，
+	// 实际抓取地址放在 Result.FetchedURL。
+	requested := target
+	target = RewriteGitHubBlobURL(target)
 
 	// Budget: honour a caller-supplied deadline (CLI --timeout / MCP timeout
 	// arg); otherwise apply the OpFetch profile. All tiers share this single
@@ -147,7 +172,7 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	if s.tavilyKey != "" {
 		content, err := s.tavilyExtract(extractorCtx, target)
 		if err == nil && strings.TrimSpace(content) != "" {
-			return &Result{URL: target, Content: content, Tier: "tavily"}, nil
+			return &Result{URL: requested, FetchedURL: target, Content: content, Tier: "tavily"}, nil
 		}
 		record("tavily", err)
 		if opCtx.Err() != nil {
@@ -159,7 +184,7 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	if s.firecrawlKey != "" {
 		content, err := s.firecrawlScrape(extractorCtx, target)
 		if err == nil && strings.TrimSpace(content) != "" {
-			return &Result{URL: target, Content: content, Tier: "firecrawl"}, nil
+			return &Result{URL: requested, FetchedURL: target, Content: content, Tier: "firecrawl"}, nil
 		}
 		record("firecrawl", err)
 		if opCtx.Err() != nil {
@@ -183,7 +208,7 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 			err = fmt.Errorf("grok tier: model reported partial content")
 		}
 		if err == nil && strings.TrimSpace(content) != "" {
-			return &Result{URL: target, Content: content, Tier: "grok", Model: s.model}, nil
+			return &Result{URL: requested, FetchedURL: target, Content: content, Tier: "grok", Model: s.model}, nil
 		}
 		record("grok", err)
 		if opCtx.Err() != nil {
@@ -197,7 +222,7 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	if !s.strict {
 		content, err := s.basicHTTPFetch(opCtx, target)
 		if err == nil && strings.TrimSpace(content) != "" {
-			return &Result{URL: target, Content: content, Tier: "http"}, nil
+			return &Result{URL: requested, FetchedURL: target, Content: content, Tier: "http"}, nil
 		}
 		record("http", err)
 	}

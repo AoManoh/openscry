@@ -32,6 +32,9 @@ func searchResultMap(res *search.Result) map[string]any {
 	if res.ServerToolCallsKnown {
 		m["server_tool_calls"] = res.ServerToolCalls
 	}
+	if res.ExtraSources != nil {
+		m["extra_sources"] = res.ExtraSources
+	}
 	if len(res.Sources) > 0 {
 		m["sources"] = res.Sources
 	}
@@ -60,6 +63,9 @@ func batchItemsResult(items []search.BatchItem) map[string]any {
 			entry["elapsed_s"] = roundSeconds(it.Elapsed)
 			if it.ServerToolCallsKnown {
 				entry["server_tool_calls"] = it.ServerToolCalls
+			}
+			if it.ExtraSources != nil {
+				entry["extra_sources"] = it.ExtraSources
 			}
 		}
 		if len(it.Sources) > 0 {

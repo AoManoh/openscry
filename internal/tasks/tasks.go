@@ -86,17 +86,18 @@ func (t *Task) snapshot() Snapshot {
 		Kind:        t.Kind,
 		State:       t.State,
 		Params:      t.Params,
-		SubmittedAt: t.SubmittedAt,
+		SubmittedAt: t.SubmittedAt.UTC(),
 		Result:      t.Result,
 		Err:         t.Err,
 		CancelHint:  t.CancelHint,
 	}
+	// 时间戳统一以 UTC 输出，避免调用方在不同主机时区下比较任务时间时出错
 	if !t.StartedAt.IsZero() {
-		st := t.StartedAt
+		st := t.StartedAt.UTC()
 		s.StartedAt = &st
 	}
 	if !t.FinishedAt.IsZero() {
-		ft := t.FinishedAt
+		ft := t.FinishedAt.UTC()
 		s.FinishedAt = &ft
 	}
 	return s

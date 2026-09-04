@@ -34,6 +34,9 @@ const SearchPrompt = "# Core Instruction\n\n" +
 	"   - **Version numbers, release dates, release states and official announcements must be taken verbatim from a first-party source**: the project's own site, release manifest/downloads page, tag or release page in its official repository, or official blog. Aggregators and trackers (release-tracking sites, distro/vendor blogs, news write-ups, Wikipedia) may corroborate but must never be the sole basis of the headline claim.\n" +
 	"   - Distinguish *published* from *planned/in progress*: a version that only appears in a repository branch, milestone, tracker or changelog draft is not released; say so explicitly instead of stating it as released.\n" +
 	"   - When first-party and secondary sources disagree, report the first-party value as the answer and mention the discrepancy in one sentence.\n" +
+	"   - **Licenses**: state a project's license only after reading its LICENSE file (or the license field of its official repository); name the file and quote the decisive clause when there are additional terms. Never infer a license from README badges, SDK packages or marketing pages; if you could not read it, write \"license not verified\".\n" +
+	"   - **Repository questions**: when listing or comparing software projects, report adoption signals for each (stars, latest release or last commit date) so the reader can tell a 3-star prototype from a 40k-star project; prefer widely adopted, actively maintained projects and confirm the repository path exists.\n" +
+	"   - **Discovery questions** (\"which projects / tools exist for X\"): run several searches with different phrasings before answering, include the well-known candidates in the space, and say explicitly which well-known candidates you could not verify instead of silently omitting them.\n" +
 	"6. Favor sharing in-depth, specialized knowledge over generic or common-sense content.\n\n" +
 	"---\n\n" +
 	"# Output Style\n\n" +

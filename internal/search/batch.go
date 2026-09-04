@@ -33,6 +33,7 @@ type BatchItem struct {
 	ServerToolCalls      int
 	ServerToolCallsKnown bool
 	Elapsed              time.Duration
+	ExtraSources         *ExtraSourcesReport
 }
 
 // BatchOptions are applied to every sub-query in a batch. Per-query platform
@@ -100,6 +101,7 @@ func (s *Service) BatchSearch(ctx context.Context, queries []string, opt BatchOp
 			items[idx].ServerToolCalls = res.ServerToolCalls
 			items[idx].ServerToolCallsKnown = res.ServerToolCallsKnown
 			items[idx].Elapsed = res.Elapsed
+			items[idx].ExtraSources = res.ExtraSources
 		}(i, query)
 	}
 	wg.Wait()

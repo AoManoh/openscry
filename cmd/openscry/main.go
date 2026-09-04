@@ -159,6 +159,13 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 	} else {
 		fmt.Fprintf(os.Stderr, "elapsed: %.1fs\n", res.Elapsed.Seconds())
 	}
+	if r := res.ExtraSources; r != nil {
+		fmt.Fprintf(os.Stderr, "extra_sources: requested %d, added %d, %d duplicated model sources", r.Requested, r.Added, r.Duplicates)
+		if len(r.Failed) > 0 {
+			fmt.Fprintf(os.Stderr, ", failed: %s", strings.Join(r.Failed, ","))
+		}
+		fmt.Fprintln(os.Stderr)
+	}
 	// Sources go to stderr so stdout stays clean for piping the answer.
 	if len(res.Sources) > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d sources:\n", len(res.Sources))

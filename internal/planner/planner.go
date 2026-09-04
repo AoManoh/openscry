@@ -64,8 +64,78 @@ func (s *Service) Plan(ctx context.Context, question string) (*Plan, error) {
 	if err := validatePlan(plan); err != nil {
 		return nil, fmt.Errorf("planner: plan validation failed: %w", err)
 	}
+	normalizePlan(plan)
 
 	return plan, nil
+}
+
+// normalizePlan 对模型给出的规划做确定性修正，不改变其意图：
+//  1. execution 按 depends_on 重新推导：同一层（前置全部满足）的子查询并行，层与层顺序执行；
+//     模型常把只依赖同一个前置的多个子查询全部塞进 sequential，白白串行。
+//  2. 每个 tool_hint 为空或 web_search 的子查询至少有一条搜索词；缺失时用其 goal 兜底生成，
+//     并标记 round 1。
+func normalizePlan(p *Plan) {
+	ids := make(map[string]int, len(p.SubQueries))
+	for i, sq := range p.SubQueries {
+		ids[sq.ID] = i
+	}
+	deps := func(sq SubQuery) []string {
+		var out []string
+		for _, d := range strings.Split(sq.DependsOn, ",") {
+			d = strings.TrimSpace(d)
+			if _, ok := ids[d]; ok && d != sq.ID {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	level := make(map[string]int, len(p.SubQueries))
+	var visit func(id string, depth int) int
+	visit = func(id string, depth int) int {
+		if l, ok := level[id]; ok {
+			return l
+		}
+		if depth > len(p.SubQueries) { // 依赖成环：按第 1 层处理，避免死循环
+			return 1
+		}
+		l := 1
+		for _, d := range deps(p.SubQueries[ids[id]]) {
+			if dl := visit(d, depth+1) + 1; dl > l {
+				l = dl
+			}
+		}
+		level[id] = l
+		return l
+	}
+	maxLevel := 0
+	for _, sq := range p.SubQueries {
+		if l := visit(sq.ID, 0); l > maxLevel {
+			maxLevel = l
+		}
+	}
+	groups := make([][]string, maxLevel)
+	var sequential []string
+	for _, sq := range p.SubQueries {
+		l := level[sq.ID]
+		groups[l-1] = append(groups[l-1], sq.ID)
+		if l > 1 {
+			sequential = append(sequential, sq.ID)
+		}
+	}
+	p.Execution = Execution{ParallelGroups: groups, Sequential: sequential}
+
+	covered := make(map[string]bool, len(p.SearchTerms))
+	for _, t := range p.SearchTerms {
+		for _, pid := range strings.Split(t.Purpose, ",") {
+			covered[strings.TrimSpace(pid)] = true
+		}
+	}
+	for _, sq := range p.SubQueries {
+		if covered[sq.ID] || (sq.ToolHint != "" && sq.ToolHint != "web_search") {
+			continue
+		}
+		p.SearchTerms = append(p.SearchTerms, SearchTerm{Term: sq.Goal, Purpose: sq.ID, Round: 1})
+	}
 }
 
 // parsePlan extracts a Plan from the model's raw response. It handles common

@@ -133,6 +133,18 @@ type Result struct {
 	ServerToolCallsKnown bool
 	// Elapsed 是本次搜索（含重试）的端到端耗时，由服务层计时，调用方无需再括号计时。
 	Elapsed time.Duration
+	// ExtraSources 记录 extra_sources 参考检索的实际效果（请求数、新增数、与模型引用重复数、
+	// 按提供方分布）；未请求时为 nil。它让调用方能判断"要了 3 条为什么只多了 1 条"。
+	ExtraSources *ExtraSourcesReport
+}
+
+// ExtraSourcesReport 是 extra_sources 的结算单。
+type ExtraSourcesReport struct {
+	Requested  int            `json:"requested"`
+	Added      int            `json:"added"`
+	Duplicates int            `json:"duplicates_of_model_sources"`
+	ByOrigin   map[string]int `json:"by_origin,omitempty"`
+	Failed     []string       `json:"failed_providers,omitempty"`
 }
 
 // Search executes one web search through the resilience layer. The model is
@@ -217,10 +229,25 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 		annotated = append(annotated, sources.Source{Title: title, URL: c.URL})
 	}
 	merged := sources.Merge(grokSrc, annotated, refSrc)
-	// 让正文里的 [[n]](url) 编号与最终 Sources 列表的序号一致，下游才能按编号回溯来源。
-	answer = renumberInlineCitations(answer, merged)
+	// 让正文里的 [[n]](url) 编号与最终 Sources 列表的序号一致，下游才能按编号回溯来源；
+	// 模型偶尔把同一引用连写两遍（[[3]](u)[[3]](u)），折叠为一个。
+	answer = collapseRepeatedCitations(renumberInlineCitations(answer, merged))
 	result := &Result{Content: answer, Model: model, Sources: merged, Elapsed: time.Since(started),
 		ServerToolCalls: completion.ServerToolCalls, ServerToolCallsKnown: completion.ServerToolCallsKnown}
+	if useRef {
+		report := &ExtraSourcesReport{Requested: req.ExtraSources, ByOrigin: map[string]int{}}
+		for _, src := range merged {
+			if src.Origin != "" {
+				report.Added++
+				report.ByOrigin[src.Origin]++
+			}
+		}
+		report.Duplicates = len(refSrc) - report.Added
+		for _, f := range refFailures {
+			report.Failed = append(report.Failed, f.Provider)
+		}
+		result.ExtraSources = report
+	}
 	var warnings []string
 	if len(refFailures) > 0 {
 		warnings = append(warnings, formatRefFailures(refFailures))
@@ -242,9 +269,31 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 }
 
 var (
-	numericTitle   = regexp.MustCompile(`^\d+$`)
-	inlineCitation = regexp.MustCompile(`\[\[(\d+)\]\]\((https?://[^)\s]+)\)`)
+	numericTitle     = regexp.MustCompile(`^\d+$`)
+	inlineCitation   = regexp.MustCompile(`\[\[(\d+)\]\]\((https?://[^)\s]+)\)`)
+	repeatedCitation = regexp.MustCompile(`(\[\[\d+\]\]\([^)\s]+\))(?:\s*\[\[\d+\]\]\([^)\s]+\))+`)
 )
+
+// collapseRepeatedCitations 把紧邻连写且指向同一 URL 的重复引用折叠为一个；指向不同 URL 的
+// 连续引用（多来源佐证）保持不变。
+func collapseRepeatedCitations(answer string) string {
+	return repeatedCitation.ReplaceAllStringFunc(answer, func(run string) string {
+		parts := inlineCitation.FindAllStringSubmatch(run, -1)
+		if len(parts) < 2 {
+			return run
+		}
+		var b strings.Builder
+		lastURL := ""
+		for _, p := range parts {
+			if p[2] == lastURL {
+				continue
+			}
+			b.WriteString(p[0])
+			lastURL = p[2]
+		}
+		return b.String()
+	})
+}
 
 // renumberInlineCitations 把正文中 [[n]](url) 的 n 改写为 url 在最终来源列表中的
 // 1 起始序号；列表中找不到的 URL 保持原样。模型自行编号时常不连续或与尾部列表错位，
