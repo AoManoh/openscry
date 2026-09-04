@@ -2,6 +2,31 @@
 
 本文件面向 openscry 的使用者，记录每个发布版本可感知的变化。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为 tag 推送日。
 
+## [0.2.1] - 2026-09-04
+
+依据一次真实调研任务的使用反馈（8 项）做的修复与改进；升级不改任何接口，不需要重建配置。
+
+### 修复
+
+- **`web_fetch` 对 GitHub blob/raw 页面改为取文件原文**：`github.com/{owner}/{repo}/blob|raw/{ref}/{path}` 自动改写为 `raw.githubusercontent.com/...`（去掉 `#L` 行锚点），此前各抓取层拿到的是带行号的页面骨架；首行注释以 `fetched=` 标出实际抓取地址，`url=` 仍是调用方给的地址。
+- **相邻重复引用折叠**：模型把同一引用连写两遍（`[[3]](url)[[3]](url)`）时折叠为一个；指向不同 URL 的连续引用不受影响。
+- **`research_plan` 执行顺序按依赖重排**：`parallel_groups` 现在是按 `depends_on` 推导的分层（同层并行、层间顺序、覆盖全部子查询），`sequential` 只列有前置的子查询；此前模型常把只依赖同一前置的多个子查询全部串行。缺少搜索词的 `web_search` 子查询用其 goal 兜底补一条 round 1 搜索词。
+- 异步任务的 `submitted_at` / `started_at` / `finished_at` 统一为 UTC。
+
+### 改进
+
+- **`extra_sources` 结算可见**：传了 `extra_sources` 时，`web_search` 尾部追加 `> extra_sources: requested N, added M, K duplicated model sources[, failed: 提供方]`；批量 / 异步 JSON 带 `extra_sources` 对象（含 `by_origin`）。回答"要了 3 条为什么只多了 1 条"。
+- `research_plan` 返回 `elapsed_s`。
+- 搜索提示词新增三条规则：许可证只在读过 LICENSE 文件（或官方仓库许可证字段）后陈述，并引用决定性条款，否则写"license not verified"；列举 / 比较软件项目时报告 stars 与最近发布 / 提交日期并确认仓库路径存在；发现类问题（"有哪些项目 / 工具"）多次换词搜索，包含领域内的知名候选，并明说哪些知名候选未能核实。
+
+### 升级方法
+
+```bash
+go install github.com/AoManoh/openscry/cmd/openscry@v0.2.1
+```
+
+MCP 配置把 `@v0.2.0` 改为 `@v0.2.1` 后重启会话；`openscry version` 应输出 `openscry v0.2.1`。
+
 ## [0.2.0] - 2026-09-03
 
 openscry 的首个正式发布版本。openscry 是把 grok2api（OpenAI 兼容上游）当作联网检索引擎使用的 Go 单二进制：CLI 核心 + 薄 MCP 适配层，为 AI IDE / agent 提供带引用的联网搜索、多级网页抓取、站点地图与调研规划。此前的 `v0.2.0-s5` 至 `v0.2.0-s11` 均为预发布构建，本版取代它们；`go install …@latest` 自此解析到 `v0.2.0`。
@@ -34,4 +59,5 @@ go install github.com/AoManoh/openscry/cmd/openscry@v0.2.0
 
 MCP 配置以 `go run` 在线启动的，把 `args` 中的 `github.com/AoManoh/openscry/cmd/openscry@main`（或 `@v0.2.0-sN`）改为 `@v0.2.0` 后重启会话。升级后用 `openscry version` 确认输出 `openscry v0.2.0`。
 
+[0.2.1]: https://github.com/AoManoh/openscry/releases/tag/v0.2.1
 [0.2.0]: https://github.com/AoManoh/openscry/releases/tag/v0.2.0

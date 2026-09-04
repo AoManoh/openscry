@@ -26,7 +26,7 @@ The MCP tool surface is gated by `--tools`:
 
 - **Model is user-supplied, never defaulted.** `GROK_MODEL` is required. An unavailable model fails explicitly (exit 1 / MCP `isError=true`), never silently switches.
 - **Degradation is visible.** web_fetch reports which tier produced the result; `GROK_FETCH_FALLBACK=strict` disables the low-fidelity basic-HTTP fallback; a search answer with no parsable sources carries a warning.
-- **Retrieval is observable.** `web_search` results end with `> model:`, `> tools: N server-side calls` (hosted tool calls reported by the upstream; absent when the upstream does not report it) and `> elapsed:`; batch/async results carry `server_tool_calls` and `elapsed_s`; inline `[[n]](url)` numbering matches the Sources list.
+- **Retrieval is observable.** `web_search` results end with `> model:`, `> tools: N server-side calls` (hosted tool calls reported by the upstream; absent when the upstream does not report it) and `> elapsed:`; with `extra_sources` set, also `> extra_sources: requested N, added M, K duplicated model sources[, failed: …]`; batch/async results carry `server_tool_calls`, `elapsed_s` and `extra_sources`; inline `[[n]](url)` numbering matches the Sources list. `web_fetch` rewrites GitHub blob/raw pages to raw.githubusercontent.com to get the file itself and reports the actual address as `fetched=` in the header comment.
 - **Search tools are declared on the request.** Every search declares hosted search tools in the request `tools` array (default `web_search`, optionally `x_search`) instead of relying on upstream "implicit search"; grok2api v3's Console route only runs tools the client declares. `GROK_SEARCH_TOOLS=none` disables it.
 - **One code path.** CLI and MCP adapter share the same core packages.
 - **Resilience built-in.** Circuit breaker, bounded retry with a shared budget, per-operation timeout profiles (search 120s / fetch 30s / map 90s), upstream Retry-After honored.
@@ -78,19 +78,19 @@ About `GROK_SEARCH_TOOLS`: the default `web_search` works on both the Console an
 ./openscry mcp --tools all              # expose all 10 tools (incl. async task family)
 ./openscry mcp --http 127.0.0.1:8080    # serve over HTTP JSON-RPC (requires GROK_HTTP_API_KEY)
 
-./openscry version   # prints the version from build info: release tag (v0.2.0), local pseudo-version or devel
+./openscry version   # prints the version from build info: release tag (v0.2.1), local pseudo-version or devel
 ```
 
 ## IDE MCP configuration
 
-Add openscry under `mcpServers` in your `mcp_config.json`. **Online mode is recommended** — no local build needed, `go run` pulls the source from GitHub and compiles it automatically. Pin a release tag (such as `@v0.2.0`) rather than `@main`; to upgrade, change the tag and restart the session (see [CHANGELOG.md](CHANGELOG.md)):
+Add openscry under `mcpServers` in your `mcp_config.json`. **Online mode is recommended** — no local build needed, `go run` pulls the source from GitHub and compiles it automatically. Pin a release tag (such as `@v0.2.1`) rather than `@main`; to upgrade, change the tag and restart the session (see [CHANGELOG.md](CHANGELOG.md)):
 
 ```json
 {
   "mcpServers": {
     "openscry-mcp": {
       "command": "go",
-      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@v0.2.0", "mcp", "--tools", "all"],
+      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@v0.2.1", "mcp", "--tools", "all"],
       "env": {
         "GROK_API_URL": "https://your-host/v1",
         "GROK_API_KEY": "your-key",

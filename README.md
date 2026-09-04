@@ -26,7 +26,7 @@ MCP 工具面通过 `--tools` 分级：
 
 - **模型由用户指定，绝不默认。** `GROK_MODEL` 必填；不可用的模型显式失败（exit 1 / MCP `isError=true`），绝不静默切换到其他模型。
 - **降级可见。** web_fetch 报告结果由哪一级产出；`GROK_FETCH_FALLBACK=strict` 完全禁用低保真的 basic-HTTP 回退；搜索答案解析不出任何来源时附带 warning。
-- **检索可观测。** `web_search` 结果尾部附 `> model:`、`> tools: N server-side calls`（上游报告的托管工具调用次数，缺失表示上游未提供）与 `> elapsed:`；批量/异步结果含 `server_tool_calls`、`elapsed_s` 字段；正文内联引用 `[[n]](url)` 的 n 与 Sources 列表序号一致。
+- **检索可观测。** `web_search` 结果尾部附 `> model:`、`> tools: N server-side calls`（上游报告的托管工具调用次数，缺失表示上游未提供）与 `> elapsed:`；传了 `extra_sources` 时再附 `> extra_sources: requested N, added M, K duplicated model sources[, failed: …]`；批量/异步结果含 `server_tool_calls`、`elapsed_s`、`extra_sources` 字段；正文内联引用 `[[n]](url)` 的 n 与 Sources 列表序号一致。`web_fetch` 会把 GitHub blob/raw 页面改写为 raw.githubusercontent.com 取文件原文，首行注释以 `fetched=` 标出实际地址。
 - **搜索工具由请求显式声明。** 每次搜索都在请求的 `tools` 数组声明托管搜索工具（默认 `web_search`，可加 `x_search`），不依赖上游"自动搜索"；grok2api v3 的 Console 路由只执行客户端声明的工具。`GROK_SEARCH_TOOLS=none` 可关闭。
 - **单一代码路径。** CLI 与 MCP 适配层共用同一套核心包（`internal/search` / `fetch` / `mapper` / `planner`）。
 - **内建弹性。** 熔断器、共享预算的有界重试、分操作超时档（search 120s / fetch 30s / map 90s）、尊重上游 Retry-After。
@@ -78,19 +78,19 @@ export FIRECRAWL_API_KEY=             # 启用 fetch 的 Firecrawl 级
 ./openscry mcp --tools all              # 暴露全部 10 个工具（含异步任务族）
 ./openscry mcp --http 127.0.0.1:8080    # 走 HTTP JSON-RPC（需 GROK_HTTP_API_KEY）
 
-./openscry version   # 输出 build 信息中的版本：发布 tag（v0.2.0）、本地构建伪版本或 devel
+./openscry version   # 输出 build 信息中的版本：发布 tag（v0.2.1）、本地构建伪版本或 devel
 ```
 
 ## 在 IDE中配置 MCP
 
-在 `mcp_config.json` 的 `mcpServers` 中加入 openscry。**推荐在线方式**——无需本地构建，`go run` 会自动从 GitHub 拉取源码并编译；固定到发布 tag（如 `@v0.2.0`）而不是 `@main`，升级时改 tag 后重启会话即可（版本记录见 [CHANGELOG.md](CHANGELOG.md)）：
+在 `mcp_config.json` 的 `mcpServers` 中加入 openscry。**推荐在线方式**——无需本地构建，`go run` 会自动从 GitHub 拉取源码并编译；固定到发布 tag（如 `@v0.2.1`）而不是 `@main`，升级时改 tag 后重启会话即可（版本记录见 [CHANGELOG.md](CHANGELOG.md)）：
 
 ```json
 {
   "mcpServers": {
     "openscry-mcp": {
       "command": "go",
-      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@v0.2.0", "mcp", "--tools", "all"],
+      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@v0.2.1", "mcp", "--tools", "all"],
       "env": {
         "GROK_API_URL": "https://你的-host/v1",
         "GROK_API_KEY": "你的-key",
