@@ -21,6 +21,10 @@ type ConfigInfo struct {
 	RequestTimeout string `json:"request_timeout"`
 	Concurrency    int    `json:"concurrency"`
 	QueueSize      int    `json:"queue_size"`
+	// QueueWaitTimeout 是 stdio 请求队列满时 tools/call 等待空位的上限（GROK_QUEUE_WAIT_TIMEOUT），
+	// "0s" 表示立即拒绝。暴露它是为了让调用方在收到过载错误时能核对服务端实际生效的等待
+	// 预算；与 Concurrency / QueueSize 一样只对 stdio 传输有意义。
+	QueueWaitTimeout string `json:"queue_wait_timeout"`
 	// UpstreamConcurrency is the global cap on simultaneous grok2api calls.
 	// Unlike Concurrency (stdio-only request processing), this is honored in
 	// both transports, so the reported value is always accurate. 0 = disabled.
@@ -48,6 +52,7 @@ func (c ConfigInfo) Map() map[string]any {
 		"request_timeout":      c.RequestTimeout,
 		"concurrency":          c.Concurrency,
 		"queue_size":           c.QueueSize,
+		"queue_wait_timeout":   c.QueueWaitTimeout,
 		"upstream_concurrency": c.UpstreamConcurrency,
 		"tavily_enabled":       c.Tavily,
 		"firecrawl_enabled":    c.Firecrawl,

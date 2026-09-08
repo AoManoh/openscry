@@ -2,8 +2,9 @@
 // core over stdio JSON-RPC. The wire types mirror the MCP/JSON-RPC shapes
 // validated by openPic-mcp so existing MCP clients (Windsurf/Cascade) work
 // without change. Dispatch runs on a single concurrent engine (bounded
-// worker pool + bounded queue + cancellation registry); there is no
-// synchronous/concurrent dual track.
+// worker pool + bounded queue + bounded wait list + cancellation registry);
+// there is no synchronous/concurrent dual track, and the recv loop never
+// executes a tool call itself.
 package mcpserver
 
 import "encoding/json"
@@ -23,6 +24,27 @@ const (
 	ErrCodeInvalidParams  = -32602
 	ErrCodeInternalError  = -32603
 	ErrCodeToolExecution  = -32000
+)
+
+// OverloadedMessagePrefix 是引擎在请求队列饱和、无法受理 tools/call 时写回的工具错误文本的
+// 固定开头。过载拒绝不复用任何 JSON-RPC 错误码：它以 isError=true 的工具结果返回，与工具
+// 自身的执行失败同一形态，调用方的模型能直接读到原因并决定重试；固定前缀让客户端与测试
+// 无需解析全文即可把它同其它工具错误区分开。
+const OverloadedMessagePrefix = "openscry MCP server overloaded"
+
+// overloadReason 标识拒绝发生在哪条路径。它进入日志字段与拒绝文案，便于运维聚合和测试
+// 断言，不进入协议层的错误码。
+type overloadReason string
+
+const (
+	// overloadWaitTimeout：在等待队列空位的上限内没有等到。
+	overloadWaitTimeout overloadReason = "wait_timeout"
+	// overloadCapacityExhausted：在飞请求已达 workers + 队列 + 等待名单的总容量，不再受理。
+	overloadCapacityExhausted overloadReason = "capacity_exhausted"
+	// overloadWaitDisabled：队列已满且配置为不等待（QueueWaitTimeout 为 QueueWaitNone）。
+	overloadWaitDisabled overloadReason = "wait_disabled"
+	// overloadShutdown：引擎关机时该请求仍在等待空位，关机预算用尽后被拒绝。
+	overloadShutdown overloadReason = "shutdown"
 )
 
 // JSONRPCRequest is an incoming JSON-RPC 2.0 message.

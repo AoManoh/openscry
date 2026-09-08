@@ -22,14 +22,16 @@ MCP 工具面通过 `--tools` 分级：
 - **core（默认，6 个）**：web_search / web_fetch / web_map / research_plan / web_search_batch / get_config_info
 - **all（10 个）**：core + 异步任务族 submit_search_task / get_search_task_result / cancel_search_task / list_search_tasks
 
+异步任务存储语义：任务只存放在进程内存中，容量 256；超容时先驱逐最旧的终态任务，若 256 个都未结束则取消并删除最旧的运行中任务；任务不跨服务重启保留，重启后对旧 `task_id` 的查询返回任务不存在。
+
 ## 设计原则
 
 - **模型由用户指定，绝不默认。** `GROK_MODEL` 必填；不可用的模型显式失败（exit 1 / MCP `isError=true`），绝不静默切换到其他模型。
-- **降级可见。** web_fetch 报告结果由哪一级产出；`GROK_FETCH_FALLBACK=strict` 完全禁用低保真的 basic-HTTP 回退；搜索答案解析不出任何来源时附带 warning。
-- **检索可观测。** `web_search` 结果尾部附 `> model:`、`> tools: N server-side calls`（上游报告的托管工具调用次数，缺失表示上游未提供）与 `> elapsed:`；传了 `extra_sources` 时再附 `> extra_sources: requested N, added M, K duplicated model sources[, failed: …]`；批量/异步结果含 `server_tool_calls`、`elapsed_s`、`extra_sources` 字段；正文内联引用 `[[n]](url)` 的 n 与 Sources 列表序号一致。`web_fetch` 会把 GitHub blob/raw 页面改写为 raw.githubusercontent.com 取文件原文，首行注释以 `fetched=` 标出实际地址。
+- **降级可见。** web_fetch 报告结果由哪一级产出；`GROK_FETCH_FALLBACK=strict` 完全禁用低保真的 basic-HTTP 回退；搜索答案解析不出任何来源时附带 warning。无引用判定只看模型自身的来源（正文引用与上游 `url_citation` 注解），`extra_sources` 补充的条目不计入；来源列表只含补充项时再附一句说明这些条目不是答案的证据。上游流未确认完整（截断 / 过滤 / 未收到 `[DONE]`）时，`web_search` 仍返回已生成的正文，但 warning 首句说明响应未确认完整、未提及的内容应视为未知；`web_fetch` 的 Grok 层把未确认完整的响应按该层失败处理（继续降级，strict 下显式失败）；`research_plan` 对未确认完整的响应直接报错，不解析残缺的 JSON。
+- **检索可观测。** `web_search` 结果尾部附 `> model:`、`> tools: N server-side calls`（上游报告的托管工具调用次数，缺失表示上游未提供）与 `> elapsed:`；流未确认完整时在 `> model:` 之后再附 `> completion: <state> (<detail>)`（state 为 `truncated` / `filtered` / `unconfirmed`，`complete` 时不输出）；传了 `extra_sources` 时再附 `> extra_sources: requested N, added M, K duplicated model sources[, failed: …]`；批量/异步结果含 `server_tool_calls`、`elapsed_s`、`extra_sources` 字段，有正文的结果总是带 `completion_state`，非 `complete` 时再带 `completion_detail`；正文内联引用 `[[n]](url)` 的 n 与 Sources 列表序号一致。`web_fetch` 会把 GitHub blob/raw 页面改写为 raw.githubusercontent.com 取文件原文，首行注释以 `fetched=` 标出实际地址。
 - **搜索工具由请求显式声明。** 每次搜索都在请求的 `tools` 数组声明托管搜索工具（默认 `web_search`，可加 `x_search`），不依赖上游"自动搜索"；grok2api v3 的 Console 路由只执行客户端声明的工具。`GROK_SEARCH_TOOLS=none` 可关闭。
 - **单一代码路径。** CLI 与 MCP 适配层共用同一套核心包（`internal/search` / `fetch` / `mapper` / `planner`）。
-- **内建弹性。** 熔断器、共享预算的有界重试、分操作超时档（search 120s / fetch 30s / map 90s）、尊重上游 Retry-After。
+- **内建弹性。** 熔断器、共享预算的有界重试、分操作超时档（search 取 `GROK_REQUEST_TIMEOUT`，默认 120s / fetch 30s / map 90s）、尊重上游 Retry-After。
 
 ## 构建
 
@@ -46,21 +48,25 @@ export GROK_API_KEY=你的-api-key
 export GROK_MODEL=grok-4.20-fast      # 用户指定，绝不默认
 
 # 可选
-export GROK_REQUEST_TIMEOUT=120s
+export GROK_REQUEST_TIMEOUT=120s      # 搜索类操作（web_search / web_search_batch / 异步搜索 / research_plan）的默认预算；fetch 30s、map 90s 为固定档位；显式 timeout 参数优先
 export GROK_SEARCH_PROVIDER=auto      # auto|chat|responses
 export GROK_SEARCH_TOOLS=web_search   # 搜索请求声明的托管工具，逗号分隔；可加 x_search；none 关闭
 export GROK_FETCH_FALLBACK=full       # full|strict
 export GROK_CONCURRENCY=8             # MCP worker 池大小（stdio 请求处理）
 export GROK_QUEUE_SIZE=64             # MCP 有界队列容量
+export GROK_QUEUE_WAIT_TIMEOUT=10s    # 队列满时 tools/call 等待空位的上限；0 立即拒绝；上限 10m；仅 stdio
 export GROK_UPSTREAM_CONCURRENCY=32   # 全局并发上游 grok2api 调用上限（两种传输都生效）；0 禁用
 export GROK_MCP_TOOLS=core            # core|all，MCP 暴露的工具面
 export GROK_HTTP_ADDR=                # 设置后 mcp 走 HTTP（如 127.0.0.1:8080）
 export GROK_HTTP_API_KEY=             # HTTP 传输强制鉴权密钥
 export TAVILY_API_KEY=                # 启用 fetch/map 的 Tavily 级
 export FIRECRAWL_API_KEY=             # 启用 fetch 的 Firecrawl 级
+export GROK_DEBUG=false               # true 时 openscry mcp 输出 Debug 级 stderr 日志
 ```
 
 完整参考见 `.env.example`。
+
+`GROK_QUEUE_WAIT_TIMEOUT` 说明：只作用于 stdio 传输的请求处理队列（`GROK_CONCURRENCY` 个 worker + `GROK_QUEUE_SIZE` 容量的有界队列）。队列满时，`tools/call` 不再在接收循环上同步执行，而是最多等待该时长争取空位；等不到就以 `isError=true` 的工具结果返回明确的过载错误（含服务过载说明、当前在飞请求数、队列容量、实际等待时长以及稍后重试或降低并发的建议），`ping`、`tools/list` 等协议请求因此在任何负载下都能即时响应。默认 `10s`；`0` 表示队列满即拒绝；超过 `10m` 裁剪为 `10m`；负值或无法解析的值启动即报错。同时等待的调用最多 `GROK_QUEUE_SIZE` 个，再多的调用立即拒绝。HTTP 传输不受此项影响，其准入控制满载时返回 `503` 与 `Retry-After`。
 
 `GROK_SEARCH_TOOLS` 说明：默认 `web_search`，对 grok2api v3 的 Console 与 Grok Web 路由都可用；`web_search,x_search` 额外检索 X（Twitter）内容，但 Grok Web 路由不支持 `x_search`（上游返回 400，openscry 原样透出），只在 `GROK_MODEL` 指向 Console 模型（如 `grok-4.3`）时追加；`none` 恢复只发 `model/messages/stream` 的旧请求形态。工具作用于 `web_search` / `web_search_batch` / 异步搜索任务；`web_fetch` 的 Grok 层只在清单含 `web_search` 时声明 `web_search`（xAI 的 web_search 工具组含 browse_page / open_page，模型借此才能真正打开目标 URL），`research_plan` 按离线设计不带工具。
 

@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/AoManoh/openscry/internal/config"
 	"github.com/AoManoh/openscry/internal/fetch"
@@ -28,6 +29,7 @@ import (
 	"github.com/AoManoh/openscry/internal/mcpserver"
 	"github.com/AoManoh/openscry/internal/planner"
 	"github.com/AoManoh/openscry/internal/refsource"
+	"github.com/AoManoh/openscry/internal/resilience"
 	"github.com/AoManoh/openscry/internal/search"
 	"github.com/AoManoh/openscry/internal/tasks"
 	versioninfo "github.com/AoManoh/openscry/internal/version"
@@ -35,6 +37,35 @@ import (
 
 // version 来自 Go build 信息（发布 tag / 伪版本 / devel），见 internal/version。
 var version = versioninfo.Value()
+
+// searchProfiles 把 GROK_REQUEST_TIMEOUT 注入搜索类操作的档位。搜索服务与规划服务都
+// 以此作为默认预算，CLI、MCP stdio、MCP HTTP、批量与异步搜索、research_plan 才会遵循同
+// 一个配置值；fetch / map 档位不在这里设置，由 Normalize 补齐默认的 30s / 90s。
+// 之前 runMCP 没有把配置值传给服务层，MCP 下的搜索实际用的是 120s 默认档位，与 CLI 和
+// get_config_info 报告的 request_timeout 不一致。
+func searchProfiles(cfg *config.Config) resilience.Profiles {
+	return resilience.Profiles{Search: cfg.RequestTimeout}
+}
+
+// logLevel 把 GROK_DEBUG 映射为 slog 级别。之前 runMCP 把级别固定为 Info，config 虽然读取了
+// GROK_DEBUG 却从未使用，引擎的 mcp.req_completed 等 Debug 级日志永远不会输出，.env.example
+// 对该变量的承诺落空。级别只影响过滤阈值，不改变任何日志的字段内容，密钥不会因此进入日志。
+func logLevel(debug bool) slog.Level {
+	if debug {
+		return slog.LevelDebug
+	}
+	return slog.LevelInfo
+}
+
+// engineQueueWait 把配置层的 GROK_QUEUE_WAIT_TIMEOUT 换成引擎参数。配置里 0 表示“队列满时
+// 立即拒绝”，而 EngineConfig 沿用“零值回落默认值”的约定，所以立即拒绝必须用引擎的显式哨兵
+// 值表达；直接把 0 传过去会被引擎当成未设置而替换成 10s 默认等待，与用户配置相反。
+func engineQueueWait(d time.Duration) time.Duration {
+	if d == 0 {
+		return mcpserver.QueueWaitNone
+	}
+	return d
+}
 
 // newRefProvider builds the extra_sources reference provider from config. It
 // is always constructed; refsource.Provider.Available() is false (and the
@@ -99,6 +130,8 @@ environment:
   GROK_FETCH_FALLBACK   optional, full|strict (default full; strict disables web_fetch's basic-HTTP fallback)
   GROK_CONCURRENCY      optional, MCP worker pool size (default 8)
   GROK_QUEUE_SIZE       optional, MCP request queue size (default 64)
+  GROK_QUEUE_WAIT_TIMEOUT optional, how long a tools/call waits for a queue slot when the queue is full
+                        before it is rejected with an isError result (default 10s; 0 rejects at once; max 10m; stdio only)
   GROK_HTTP_ADDR        optional, serve MCP over HTTP at this address (e.g. :8080); --http overrides it
   GROK_HTTP_API_KEY     required for HTTP, bearer token clients must present (Authorization or X-API-Key)
   GROK_MCP_TOOLS        optional, core|all (default core; all adds async task tools); --tools overrides it
@@ -133,19 +166,15 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 	client := grok.NewClientWithLimit(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout, cfg.UpstreamConcurrency)
 	provider := config.ResolveSearchProvider(cfg.SearchProvider, cfg.APIBaseURL)
 	svc := search.NewWithOptions(client, cfg.Model, search.Options{
+		Profiles:    searchProfiles(cfg),
 		Provider:    provider,
 		RefProvider: newRefProvider(cfg),
 		Tools:       cfg.SearchTools,
 	})
 
-	to := cfg.RequestTimeout
-	if *timeout > 0 {
-		to = *timeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), to)
-	defer cancel()
-
-	res, err := svc.Search(ctx, search.Request{Query: query, Platform: *platform, Model: *model, ExtraSources: *extraSources})
+	// --timeout 作为显式预算参数交给服务层；不给上下文设截止时间，服务层才能区分
+	// "调用方要求的预算"与"传输层上限"。
+	res, err := svc.Search(context.Background(), search.Request{Query: query, Platform: *platform, Model: *model, ExtraSources: *extraSources, Timeout: *timeout})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "search failed:", err)
 		return 1
@@ -153,6 +182,11 @@ usage: openscry search [--model M] [--platform P] [--timeout D] "your query"`)
 	fmt.Println(res.Content)
 	if res.Warning != "" {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", res.Warning)
+	}
+	// 流未确认完整时在 stderr 单独给一行状态，与 MCP 尾注 > completion: 同一口径；
+	// stdout 仍只有正文，管道消费方不受影响。
+	if res.CompletionState != grok.StateComplete {
+		fmt.Fprintf(os.Stderr, "completion: %s (%s)\n", res.CompletionState, res.CompletionDetail)
 	}
 	if res.ServerToolCallsKnown {
 		fmt.Fprintf(os.Stderr, "tools: %d server-side calls; elapsed: %.1fs\n", res.ServerToolCalls, res.Elapsed.Seconds())
@@ -198,10 +232,11 @@ func runMCP(args []string) int {
 
 	// Logs go to stderr; stdout is reserved exclusively for the MCP
 	// JSON-RPC stream.
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel(cfg.Debug)}))
 	client := grok.NewClientWithLimit(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout, cfg.UpstreamConcurrency)
 	provider := config.ResolveSearchProvider(cfg.SearchProvider, cfg.APIBaseURL)
 	searchSvc := search.NewWithOptions(client, cfg.Model, search.Options{
+		Profiles:    searchProfiles(cfg),
 		Provider:    provider,
 		RefProvider: newRefProvider(cfg),
 		Tools:       cfg.SearchTools,
@@ -219,13 +254,14 @@ func runMCP(args []string) int {
 	srv := mcpserver.NewWithConfig(os.Stdin, os.Stdout, logger, mcpserver.EngineConfig{
 		MaxConcurrentRequests: cfg.Concurrency,
 		RequestQueueSize:      cfg.QueueSize,
+		QueueWaitTimeout:      engineQueueWait(cfg.QueueWaitTimeout),
 	})
 	mapSvc := mapper.New(mapper.Options{
 		TavilyAPIKey: cfg.TavilyAPIKey,
 		TavilyAPIURL: cfg.TavilyAPIURL,
 	})
 
-	planSvc := planner.New(client, planner.Options{Model: cfg.Model})
+	planSvc := planner.New(client, planner.Options{Model: cfg.Model, Profiles: searchProfiles(cfg)})
 
 	// Resolve the advertised tool set: --tools overrides GROK_MCP_TOOLS.
 	toolset := cfg.MCPTools
@@ -268,6 +304,7 @@ func runMCP(args []string) int {
 		RequestTimeout:      cfg.RequestTimeout.String(),
 		Concurrency:         cfg.Concurrency,
 		QueueSize:           cfg.QueueSize,
+		QueueWaitTimeout:    cfg.QueueWaitTimeout.String(),
 		UpstreamConcurrency: cfg.UpstreamConcurrency,
 		Tavily:              cfg.TavilyAPIKey != "",
 		Firecrawl:           cfg.FirecrawlAPIKey != "",
@@ -309,7 +346,9 @@ func runMCP(args []string) int {
 		"search_tools", strings.Join(cfg.SearchTools, ","),
 		"tavily", cfg.TavilyAPIKey != "", "firecrawl", cfg.FirecrawlAPIKey != "",
 		"concurrency", cfg.Concurrency, "queue_size", cfg.QueueSize,
-		"upstream_concurrency", cfg.UpstreamConcurrency)
+		"queue_wait_timeout", cfg.QueueWaitTimeout.String(),
+		"upstream_concurrency", cfg.UpstreamConcurrency,
+		"debug", cfg.Debug)
 
 	var serveErr error
 	if transport == "http" {
@@ -369,14 +408,8 @@ usage: openscry fetch [--timeout D] <url>`)
 		Tools:           cfg.FetchTools(),
 	})
 
-	ctx := context.Background()
-	if *timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, *timeout)
-		defer cancel()
-	}
-
-	res, err := fetchSvc.Fetch(ctx, target)
+	// --timeout 作为显式预算参数交给服务层，0 表示使用 OpFetch 档位（30s）。
+	res, err := fetchSvc.FetchWithTimeout(context.Background(), target, *timeout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fetch failed:", err)
 		return 1
@@ -417,19 +450,14 @@ usage: openscry map [--depth N] [--breadth N] [--limit N] [--instructions S] [--
 		TavilyAPIURL: cfg.TavilyAPIURL,
 	})
 
-	ctx := context.Background()
-	if *timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, *timeout)
-		defer cancel()
-	}
-
-	res, err := mapSvc.Map(ctx, mapper.Request{
+	// --timeout 作为显式预算参数交给服务层，0 表示使用 OpMap 档位（90s）。
+	res, err := mapSvc.Map(context.Background(), mapper.Request{
 		URL:          target,
 		MaxDepth:     *depth,
 		MaxBreadth:   *breadth,
 		Limit:        *limit,
 		Instructions: *instructions,
+		Timeout:      *timeout,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "map failed:", err)
@@ -467,16 +495,10 @@ usage: openscry plan [--timeout D] "your research question"`)
 	}
 
 	client := grok.NewClientWithLimit(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout, cfg.UpstreamConcurrency)
-	planSvc := planner.New(client, planner.Options{Model: cfg.Model})
+	planSvc := planner.New(client, planner.Options{Model: cfg.Model, Profiles: searchProfiles(cfg)})
 
-	ctx := context.Background()
-	if *timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, *timeout)
-		defer cancel()
-	}
-
-	plan, err := planSvc.Plan(ctx, question)
+	// --timeout 作为显式预算参数交给服务层，0 表示使用搜索档位（GROK_REQUEST_TIMEOUT）。
+	plan, err := planSvc.PlanWithTimeout(context.Background(), question, *timeout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "plan failed:", err)
 		return 1

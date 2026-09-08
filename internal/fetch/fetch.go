@@ -117,6 +117,14 @@ func RewriteGitHubBlobURL(raw string) string {
 // under a single OpFetch timeout budget. The first non-empty result wins; if
 // every tier fails the returned error lists the tiers tried.
 func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
+	return s.FetchWithTimeout(ctx, rawURL, 0)
+}
+
+// FetchWithTimeout 与 Fetch 相同，但允许调用方给出显式预算（CLI --timeout / MCP timeout
+// 参数）；timeout <= 0 表示使用 OpFetch 档位。预算以参数传递而不是由调用方给上下文设
+// 截止时间，是为了让服务层能区分"调用方要求的预算"与"传输层的请求上限"：后者只应
+// 收紧预算，不应替代默认预算。
+func (s *Service) FetchWithTimeout(ctx context.Context, rawURL string, timeout time.Duration) (*Result, error) {
 	target := strings.TrimSpace(rawURL)
 	if target == "" {
 		return nil, fmt.Errorf("fetch: url must not be empty")
@@ -130,15 +138,16 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	requested := target
 	target = RewriteGitHubBlobURL(target)
 
-	// Budget: honour a caller-supplied deadline (CLI --timeout / MCP timeout
-	// arg); otherwise apply the OpFetch profile. All tiers share this single
-	// context, so a slow tier consumes the common budget.
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.profiles.For(resilience.OpFetch))
-		defer cancel()
+	// 预算：显式预算优先，否则用 OpFetch 档位；两者之一总会作为操作上下文的截止时间
+	// 生效，父上下文更早的截止时间由 context 自动保留。之前"父上下文已有截止时间就跳过
+	// 档位"的做法让 MCP HTTP 传输的 10 分钟请求上限冒充了抓取预算，同一次抓取在 stdio
+	// 与 HTTP 下的行为因此不一致。所有层共用这一个上下文，慢的层消耗的是公共预算。
+	budget := timeout
+	if budget <= 0 {
+		budget = s.profiles.For(resilience.OpFetch)
 	}
-	opCtx := ctx
+	opCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 
 	// Reserve a slice of the budget for the always-available basic-HTTP last
 	// resort so a slow extractor (e.g. a model browse that hangs) cannot
@@ -146,6 +155,7 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	// run under extractorCtx (budget minus the reserve); basic HTTP runs under
 	// the full opCtx and is thus guaranteed at least the reserve. In strict
 	// mode there is no basic-HTTP tier, so extractors use the whole budget.
+	// 预留量按操作上下文的实际截止时间计算：父上下文更早时以父上下文为准，与之前一致。
 	extractorCtx := opCtx
 	if dl, ok := opCtx.Deadline(); ok && !s.strict {
 		reserve := time.Until(dl) / 3
@@ -153,9 +163,9 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 			reserve = 15 * time.Second
 		}
 		if reserve > 0 {
-			var cancel context.CancelFunc
-			extractorCtx, cancel = context.WithDeadline(opCtx, dl.Add(-reserve))
-			defer cancel()
+			var cancelExtractor context.CancelFunc
+			extractorCtx, cancelExtractor = context.WithDeadline(opCtx, dl.Add(-reserve))
+			defer cancelExtractor()
 		}
 	}
 
@@ -195,7 +205,17 @@ func (s *Service) Fetch(ctx context.Context, rawURL string) (*Result, error) {
 	// Tier 3: Grok fetch via grok2api (FetchPrompt asks the model for the
 	// page's structured Markdown). Reuses the shared streaming primitive.
 	if s.client != nil {
-		content, err := s.client.CompleteWithTools(extractorCtx, s.model, prompt.FetchPrompt, prompt.FetchUserContent(target), s.tools)
+		content := ""
+		completion, err := s.client.CompleteDetailed(extractorCtx, s.model, prompt.FetchPrompt, prompt.FetchUserContent(target), s.tools)
+		if err == nil {
+			content = completion.Content
+			if completion.State != grok.StateComplete {
+				// 抓取承诺的是完整页面：流未确认完整（截断 / 过滤 / 未收到 [DONE]）时，残缺
+				// 正文不能当成功页面返回，按该层失败处理，继续降级（full）或显式失败（strict）。
+				// 这与模型自报 OPENSCRY_FETCH_PARTIAL 的处理口径一致，只是判据来自传输层。
+				err = fmt.Errorf("grok tier: response incomplete (%s: %s)", completion.State, completion.Detail)
+			}
+		}
 		if err == nil && strings.Contains(content, prompt.FetchFailureSentinel) {
 			// The model signalled it could not retrieve the page (see
 			// prompt.FetchFailureSentinel). Treat this as a tier failure so

@@ -33,6 +33,14 @@ const (
 	maxConcurrency     = 100
 	maxQueueSize       = 10000
 
+	// DefaultQueueWaitTimeout 是 stdio 传输下 tools/call 在请求队列满时等待空位的默认上限；
+	// 超时后以 isError=true 的工具结果拒绝，而不是在接收循环上同步执行。之所以给出一个
+	// 非零默认值：agent 并行发出的一批工具调用通常几秒内就能等到空位，立即拒绝会让调用方
+	// 为一次瞬时拥塞付出整次重试的代价。上限 10m 防止把等待配置成事实上的无限阻塞，那会
+	// 重新引入“请求静默挂起”的问题。
+	DefaultQueueWaitTimeout = 10 * time.Second
+	MaxQueueWaitTimeout     = 10 * time.Minute
+
 	// DefaultUpstreamConcurrency caps simultaneous in-flight grok2api calls
 	// across every consumer sharing the client (search, web_search_batch
 	// fan-out, fetch) regardless of transport. Unlike GROK_CONCURRENCY (which
@@ -99,6 +107,10 @@ type Config struct {
 	RequestTimeout time.Duration // GROK_REQUEST_TIMEOUT (default 120s, clamped [5s,600s])
 	Concurrency    int           // GROK_CONCURRENCY — MCP worker pool size (default 8, clamp [1,100])
 	QueueSize      int           // GROK_QUEUE_SIZE — MCP request queue size (default 64, clamp [1,10000])
+	// QueueWaitTimeout 是 stdio 传输下 tools/call 在请求队列满时等待空位的上限
+	// （GROK_QUEUE_WAIT_TIMEOUT；默认 10s；0 表示立即拒绝；超过 10m 裁剪为 10m；负值报错）。
+	// 只作用于 MCP 请求处理队列；HTTP 传输的准入控制已有 503 + Retry-After 语义，不受此项影响。
+	QueueWaitTimeout time.Duration
 	// UpstreamConcurrency caps simultaneous in-flight grok2api calls across
 	// all consumers and transports (GROK_UPSTREAM_CONCURRENCY; default 32,
 	// clamp [1,256]; 0 disables). See DefaultUpstreamConcurrency.
@@ -146,6 +158,7 @@ func Load() (*Config, error) {
 		RequestTimeout:      DefaultRequestTimeout,
 		Concurrency:         DefaultConcurrency,
 		QueueSize:           DefaultQueueSize,
+		QueueWaitTimeout:    DefaultQueueWaitTimeout,
 		UpstreamConcurrency: DefaultUpstreamConcurrency,
 		Debug:               parseBoolEnv("GROK_DEBUG"),
 		SearchProvider:      DefaultSearchProvider,
@@ -180,6 +193,18 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid GROK_QUEUE_SIZE (want integer): %w", err)
 		}
 		cfg.QueueSize = clampInt(n, 1, maxQueueSize)
+	}
+	if raw := strings.TrimSpace(os.Getenv("GROK_QUEUE_WAIT_TIMEOUT")); raw != "" {
+		d, err := parseTimeout(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GROK_QUEUE_WAIT_TIMEOUT: %w", err)
+		}
+		// 负值没有可解释的语义（0 已经表示立即拒绝），静默钳到 0 会掩盖配置错误，与其它
+		// 配置项一样 fail-loud。
+		if d < 0 {
+			return nil, fmt.Errorf("invalid GROK_QUEUE_WAIT_TIMEOUT: must not be negative (0 rejects immediately when the queue is full), got %q", raw)
+		}
+		cfg.QueueWaitTimeout = clampDuration(d, 0, MaxQueueWaitTimeout)
 	}
 	if raw := strings.TrimSpace(os.Getenv("GROK_UPSTREAM_CONCURRENCY")); raw != "" {
 		n, err := strconv.Atoi(raw)

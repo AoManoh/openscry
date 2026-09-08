@@ -2,14 +2,15 @@
 // normalizes heterogeneous upstream citation formats into one consistent
 // list. grok2api emits citations in several shapes depending on version and
 // model: a trailing "## Sources" heading block, a <details> block, a function
-// call like sources([...]), a tail block of bare link lines, or inline
-// [[N]](url) markers scattered through the body.
+// call like sources([...]), a tail block of bare link lines, inline
+// [[N]](url) markers scattered through the body, or, failing all of those,
+// ordinary [text](url) Markdown links inside the body.
 //
 // Split tries each strategy in priority order and returns the answer with the
-// trailing sources block removed (inline citations are kept in place, since
-// they are part of the body's meaning) plus the extracted sources. This is a
-// faithful Go port of GrokSearch's sources.py, kept transport-agnostic so the
-// CLI and the MCP adapter share one extraction path.
+// trailing sources block removed (inline citations and body links are kept in
+// place, since they are part of the body's meaning) plus the extracted
+// sources. This is a faithful Go port of GrokSearch's sources.py, kept
+// transport-agnostic so the CLI and the MCP adapter share one extraction path.
 package sources
 
 import (
@@ -38,6 +39,20 @@ var (
 	inlineCitation  = regexp.MustCompile(`\[\[(\d+)\]\]\((https?://[^)\s]+)\)`)
 	listPrefix      = regexp.MustCompile(`^\s*(?:[-*]|\d+\.)\s*`)
 	trailingPunct   = ".,;:!?"
+
+	// 以下几项只服务于 isLinkOnlyLine 的整行判定，与上面的提取用正则分开维护：提取阶段
+	// 要尽量多捞 URL，判定阶段却必须整行精确，二者宽松程度不同，不能共用一个模式。
+	//
+	// Markdown 链接 token：链接文本沿用 mdLinkPattern 的形态（不含 "]"），URL 内不允许
+	// 空白，只允许一层成对括号（维基百科条目常见的 "_(programming_language)"）。
+	mdLinkToken = `\[[^\]]+\]\(https?://(?:[^()\s]|\([^()\s]*\))+\)`
+	// 裸 URL token 只接受 RFC 3986 的 ASCII URL 字符（不含引号）。故意不接受任何非 ASCII
+	// 字符：中文正文紧贴在 URL 之后而没有空格时会终止 token，整行随之落入"非链接行"。
+	// 权衡：宁可漏识别带原生 Unicode 路径的 IRI 列表，也不冒删除正文的风险。
+	bareURLToken = `https?://[A-Za-z0-9\-._~:/?#\[\]@!$&()*+,;=%]+`
+	// 整行判定：去掉列表前缀后，必须是一个或多个链接 token；token 之间只允许空白与
+	// 中英文逗号、分号、顿号，行尾只允许空白与中英文句末标点。出现任何其它字符即为正文。
+	linkOnlyLine = regexp.MustCompile(`^(?:` + mdLinkToken + `|` + bareURLToken + `)(?:[\s,;、，；]*(?:` + mdLinkToken + `|` + bareURLToken + `))*[\s.,;:!?。，、；：！？]*$`)
 )
 
 // Split separates the answer text from its cited sources. It returns the
@@ -54,6 +69,7 @@ func Split(text string) (string, []Source) {
 		splitDetailsBlock,
 		splitTailLinkBlock,
 		splitInlineCitations,
+		splitBodyMarkdownLinks,
 	} {
 		if answer, src, ok := strategy(raw); ok {
 			return answer, src
@@ -272,15 +288,25 @@ func splitInlineCitations(text string) (string, []Source, bool) {
 	return text, src, true
 }
 
+// splitBodyMarkdownLinks 是策略链的兜底：前面所有策略都未命中时，把正文里的普通
+// Markdown 链接 [文本](url) 收集为来源。为什么需要它：句尾带引用链接的正文不再被当成
+// 尾部链接块之后，这类答案若不产出来源，搜索层会报"检索已执行但答案没有可解析引用"，
+// 与答案明明带着链接的事实矛盾。正文原样返回，因为这些链接和 [[n]](url) 一样是句子
+// 的一部分。[[n]](url) 不会重复处理：只要存在一个，splitInlineCitations 就已命中返回，
+// 而且 mdLinkPattern 的链接文本不含 "]"，本身也匹配不上 "]]" 形态。
+func splitBodyMarkdownLinks(text string) (string, []Source, bool) {
+	src := extractMarkdownLinks(text)
+	if len(src) == 0 {
+		return "", nil, false
+	}
+	return text, src, true
+}
+
+// isLinkOnlyLine 判定一行是否只由链接组成。必须整行匹配而不是"行中含有链接即算"：
+// 正文句子常以引用链接收尾（"……尚未获官方确认。[官方公告](url)"），若按含有链接判定，
+// splitTailLinkBlock 会把这些带限制条件的正文当成来源列表整段删掉。
 func isLinkOnlyLine(line string) bool {
-	stripped := strings.TrimSpace(listPrefix.ReplaceAllString(line, ""))
-	if stripped == "" {
-		return false
-	}
-	if strings.HasPrefix(stripped, "http://") || strings.HasPrefix(stripped, "https://") {
-		return true
-	}
-	return mdLinkPattern.MatchString(stripped)
+	return linkOnlyLine.MatchString(strings.TrimSpace(listPrefix.ReplaceAllString(line, "")))
 }
 
 // parseSourcesPayload parses the args of a sources(...) call. It tries JSON
@@ -370,9 +396,10 @@ func sourceFromObject(obj map[string]any) Source {
 	}
 }
 
-// extractSourcesFromText scrapes markdown links first (preserving titles),
-// then any remaining bare URLs, deduplicating by URL.
-func extractSourcesFromText(text string) []Source {
+// extractMarkdownLinks 按出现顺序收集 [文本](url) 链接并按 URL 去重，链接文本作为
+// Title。单独抽出来是为了让来源块提取与正文链接兜底共用同一套匹配与去重规则，
+// 避免两处对"什么算 Markdown 链接"各自演化。
+func extractMarkdownLinks(text string) []Source {
 	seen := make(map[string]struct{})
 	var src []Source
 	for _, m := range mdLinkPattern.FindAllStringSubmatch(text, -1) {
@@ -384,12 +411,18 @@ func extractSourcesFromText(text string) []Source {
 			continue
 		}
 		seen[url] = struct{}{}
-		title := strings.TrimSpace(m[1])
-		if title != "" {
-			src = append(src, Source{Title: title, URL: url})
-		} else {
-			src = append(src, Source{URL: url})
-		}
+		src = append(src, Source{Title: strings.TrimSpace(m[1]), URL: url})
+	}
+	return src
+}
+
+// extractSourcesFromText scrapes markdown links first (preserving titles),
+// then any remaining bare URLs, deduplicating by URL.
+func extractSourcesFromText(text string) []Source {
+	src := extractMarkdownLinks(text)
+	seen := make(map[string]struct{}, len(src))
+	for _, s := range src {
+		seen[s.URL] = struct{}{}
 	}
 	for _, url := range extractUniqueURLs(text) {
 		if _, dup := seen[url]; dup {

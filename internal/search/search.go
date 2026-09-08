@@ -112,6 +112,10 @@ type Request struct {
 	// concurrently with the Grok answer and merged into Result.Sources. It is
 	// a no-op when no RefProvider is configured.
 	ExtraSources int
+	// Timeout 是调用方的显式预算（CLI --timeout / MCP timeout 参数），0 表示使用服务的
+	// 搜索档位。预算以参数而不是父上下文截止时间传递，是为了让服务层能区分"调用方要
+	// 求的预算"与"传输层的请求上限"：后者只应收紧预算，不应替代默认预算。
+	Timeout time.Duration
 }
 
 // Result is a successful search result. Content is the answer with any
@@ -136,6 +140,11 @@ type Result struct {
 	// ExtraSources 记录 extra_sources 参考检索的实际效果（请求数、新增数、与模型引用重复数、
 	// 按提供方分布）；未请求时为 nil。它让调用方能判断"要了 3 条为什么只多了 1 条"。
 	ExtraSources *ExtraSourcesReport
+	// CompletionState 是上游流的完整性判定（complete / truncated / filtered / unconfirmed），
+	// CompletionDetail 是非 complete 时的一句话原因。正文不因不完整而丢弃：已生成的部分
+	// 对调用方仍有价值，但调用方必须把未送达的部分当作未知，而不是当作"答案到此为止"。
+	CompletionState  grok.CompletionState
+	CompletionDetail string
 }
 
 // ExtraSourcesReport 是 extra_sources 的结算单。
@@ -154,6 +163,10 @@ type ExtraSourcesReport struct {
 //
 // The per-operation search timeout bounds the whole attempt sequence (not
 // each attempt), so retries cannot extend total latency beyond the profile.
+//
+// 预算语义：req.Timeout > 0 时用它，否则用搜索档位；两者之一总会作为操作上下文的
+// 截止时间生效。父上下文自带的更早截止时间（例如 MCP HTTP 传输的请求上限）由
+// context 自动保留，因此传输层上限只会收紧预算，不会让默认预算失效。
 func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
@@ -175,7 +188,11 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	}
 	userContent := buildUserContent(query, req.Platform)
 
-	opCtx, cancel := context.WithTimeout(ctx, s.profiles.For(resilience.OpSearch))
+	budget := req.Timeout
+	if budget <= 0 {
+		budget = s.profiles.For(resilience.OpSearch)
+	}
+	opCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	// Extra reference sources (Tavily/Firecrawl search) run concurrently with
@@ -233,7 +250,8 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	// 模型偶尔把同一引用连写两遍（[[3]](u)[[3]](u)），折叠为一个。
 	answer = collapseRepeatedCitations(renumberInlineCitations(answer, merged))
 	result := &Result{Content: answer, Model: model, Sources: merged, Elapsed: time.Since(started),
-		ServerToolCalls: completion.ServerToolCalls, ServerToolCallsKnown: completion.ServerToolCallsKnown}
+		ServerToolCalls: completion.ServerToolCalls, ServerToolCallsKnown: completion.ServerToolCallsKnown,
+		CompletionState: completion.State, CompletionDetail: completion.Detail}
 	if useRef {
 		report := &ExtraSourcesReport{Requested: req.ExtraSources, ByOrigin: map[string]int{}}
 		for _, src := range merged {
@@ -249,6 +267,16 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 		result.ExtraSources = report
 	}
 	var warnings []string
+	// 流未确认完整（截断 / 过滤 / 未收到 [DONE]）时只披露、不重试、不丢弃：
+	//  - length 是模型达到输出上限，同样的请求再发一次仍会在同一处截断，重试没有意义；
+	//  - 未收到 [DONE] 的 EOF 多半是上游连接中途关闭，此时正文已经生成并计费，重试会把
+	//    上游成本加倍，而且新一次响应同样可能残缺；
+	//  - 已生成的部分正文对调用方仍有价值，丢弃会把可用信息藏起来。
+	// 因此完整性走 Result 字段 + 告警，而不是走 error（走 error 会被 resilience.Retry 当作
+	// 失败重试）。告警放在最前面，因为它改变对后面所有内容的解读方式。
+	if completion.State != grok.StateComplete {
+		warnings = append(warnings, fmt.Sprintf(IncompleteResponseWarningFmt, completion.State, completion.Detail))
+	}
 	if len(refFailures) > 0 {
 		warnings = append(warnings, formatRefFailures(refFailures))
 	}
@@ -256,12 +284,28 @@ func (s *Service) Search(ctx context.Context, req Request) (*Result, error) {
 	// 的口径）：结果仍然返回，但调用方应把时效性结论视为未经核验。usage 里的
 	// 服务端工具计数能区分两种情形：检索根本没发生（工具未声明/未调用/上游不
 	// 支持），或检索发生了但模型正文没有落引用。
-	if len(result.Sources) == 0 {
+	//
+	// 判定只数模型自身的来源（正文解析出的引用 + 上游 url_citation 注解，Origin 为空），
+	// extra_sources 补充的条目（Origin 非空）不计入：补充来源是与答案并行检索出的阅读
+	// 候选，模型作答时并未看到它们，不能充当该答案的证据。若按合并后的总数判定，同一个
+	// 无引用答案会因为传了 extra_sources 而失去告警，把"答案无据可查"藏在一个看起来
+	// 完整的来源列表后面。
+	modelSources := 0
+	for _, src := range merged {
+		if src.Origin == "" {
+			modelSources++
+		}
+	}
+	if modelSources == 0 {
 		switch {
 		case completion.ServerToolCallsKnown && completion.ServerToolCalls > 0:
 			warnings = append(warnings, fmt.Sprintf(UncitedSearchWarningFmt, completion.ServerToolCalls))
 		default:
 			warnings = append(warnings, NoSourcesWarning)
+		}
+		// 来源列表非空却全是补充项时，紧跟一句说明，否则调用方会把列表当成答案的出处。
+		if len(merged) > 0 {
+			warnings = append(warnings, ExtraSourcesNotEvidenceWarning)
 		}
 	}
 	result.Warning = strings.Join(warnings, "; ")
@@ -318,6 +362,11 @@ func renumberInlineCitations(answer string, srcs []sources.Source) string {
 	})
 }
 
+// IncompleteResponseWarningFmt 用于上游流未确认完整的情形，参数为完整性状态与原因。
+// 文案必须同时说清三件事：响应未确认完整、为什么、调用方该怎么对待缺失部分——
+// 否则 agent 会把截断处当作答案的自然结尾。
+const IncompleteResponseWarningFmt = "upstream response was not confirmed complete (%s: %s); the answer may be missing content, treat anything it does not state as unknown rather than absent"
+
 // NoSourcesWarning 是答案不含任何可解析引用、且上游未报告任何服务端工具调用
 // 时附加的可见降级提示。
 const NoSourcesWarning = "answer carries no source citations and no server-side search tool call was reported; the model likely answered from training knowledge, treat time-sensitive claims as unverified"
@@ -325,6 +374,11 @@ const NoSourcesWarning = "answer carries no source citations and no server-side 
 // UncitedSearchWarningFmt 用于"检索已执行（%d 次服务端工具调用）但正文没有可
 // 解析引用"的情形，提示调用方结论有检索支撑但无法逐条溯源。
 const UncitedSearchWarningFmt = "search ran (%d server-side tool calls) but the answer contains no parsable citations; sources cannot be traced per claim"
+
+// ExtraSourcesNotEvidenceWarning 在模型自身没有来源、但来源列表里有 extra_sources 补充项时
+// 紧跟无来源告警之后。非空的来源列表会让调用方误以为答案有据可查，必须说明这些条目只是
+// 并行参考检索给出的阅读候选，模型作答时并未使用它们。
+const ExtraSourcesNotEvidenceWarning = "the sources listed were added by the extra_sources reference search as reading candidates; the model did not use them, so they are not evidence for this answer"
 
 // formatRefFailures renders non-fatal extra_sources tier failures into one
 // visible warning line, deduplicating provider names.

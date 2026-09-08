@@ -3,11 +3,14 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/AoManoh/openscry/internal/version"
 )
@@ -176,4 +179,61 @@ func newError(id any, code int, message string, data any) *JSONRPCResponse {
 		ID:      id,
 		Error:   &JSONRPCError{Code: code, Message: message, Data: data},
 	}
+}
+
+// overloadStatus 是引擎在拒绝一个 tools/call 时的容量快照，供拒绝文案与日志共用同一组数字，
+// 避免两处各算一遍而出现口径不一致。
+type overloadStatus struct {
+	reason      overloadReason
+	inflight    int64         // 拒绝时刻仍在处理或等待中的其它请求数
+	workers     int           // worker 池大小
+	queueCap    int           // 有界队列容量
+	waitersCap  int           // 等待协程数量上限
+	waited      time.Duration // 该请求实际等待了多久（立即拒绝时为 0）
+	waitTimeout time.Duration // 配置的等待上限；QueueWaitNone 表示不等待
+}
+
+// newOverloadedResponse 构造队列饱和时写回给 tools/call 的拒绝结果。它是 isError=true 的
+// 工具结果而不是 JSON-RPC 错误：与 handleToolCall 对工具执行失败的处理形态一致，MCP 客户端会把
+// 文本原样交给模型，模型据此才知道是服务端过载、等了多久、该稍后重试还是降低并发；协议级
+// 错误码的语义（解析、参数、方法未找到）保持不变。
+func newOverloadedResponse(id any, st overloadStatus) *JSONRPCResponse {
+	return newSuccess(id, ToolCallResult{
+		IsError: true,
+		Content: []ContentItem{{Type: "text", Text: overloadedMessage(st)}},
+	})
+}
+
+// overloadedMessage 渲染拒绝文案：固定前缀 + 拒绝原因 + 容量数字 + 等待时长 + 建议动作。
+// 文案面向调用方的模型，所以每个数字都带上含义，而不是只给一串键值。
+func overloadedMessage(st overloadStatus) string {
+	var b strings.Builder
+	b.WriteString(OverloadedMessagePrefix)
+	b.WriteString(": ")
+	switch st.reason {
+	case overloadWaitTimeout:
+		b.WriteString("no processing slot became free within the queue wait timeout")
+	case overloadCapacityExhausted:
+		b.WriteString("the request queue and the wait list are both full")
+	case overloadWaitDisabled:
+		b.WriteString("the request queue is full and waiting for a slot is disabled")
+	case overloadShutdown:
+		b.WriteString("the server is shutting down and could not schedule this call before its shutdown budget ran out")
+	default:
+		b.WriteString("the request queue is full")
+	}
+	fmt.Fprintf(&b, ". Load: %d other requests in flight (workers %d, queue capacity %d, wait list capacity %d)",
+		st.inflight, st.workers, st.queueCap, st.waitersCap)
+	if st.waitTimeout == QueueWaitNone {
+		fmt.Fprintf(&b, "; this call waited %s (queue wait disabled)", formatWait(st.waited))
+	} else {
+		fmt.Fprintf(&b, "; this call waited %s of the %s queue wait timeout", formatWait(st.waited), st.waitTimeout)
+	}
+	b.WriteString(". Retry later or reduce the number of concurrent tool calls.")
+	return b.String()
+}
+
+// formatWait 以 0.1s 精度渲染等待时长，避免文案里出现纳秒级的长尾数字。
+func formatWait(d time.Duration) string {
+	return fmt.Sprintf("%.1fs", d.Seconds())
 }

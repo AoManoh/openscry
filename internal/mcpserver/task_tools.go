@@ -28,6 +28,12 @@ func searchResultMap(res *search.Result) map[string]any {
 		"content":       res.Content,
 		"sources_count": len(res.Sources),
 		"elapsed_s":     roundSeconds(res.Elapsed),
+		// completion_state 总是输出：调用方读 JSON 时不必靠"字段缺席"推断完整，
+		// 异步任务的 state 仍是 completed，完整性只通过结果字段披露。
+		"completion_state": string(res.CompletionState),
+	}
+	if res.CompletionDetail != "" {
+		m["completion_detail"] = res.CompletionDetail
 	}
 	if res.ServerToolCallsKnown {
 		m["server_tool_calls"] = res.ServerToolCalls
@@ -61,6 +67,12 @@ func batchItemsResult(items []search.BatchItem) map[string]any {
 			entry["content"] = it.Content
 			entry["sources_count"] = len(it.Sources)
 			entry["elapsed_s"] = roundSeconds(it.Elapsed)
+			// 与 searchResultMap 同一口径：有正文的子项总是带 completion_state，
+			// completion_detail 仅在非空时出现。error / skipped 子项没有响应可判定。
+			entry["completion_state"] = string(it.CompletionState)
+			if it.CompletionDetail != "" {
+				entry["completion_detail"] = it.CompletionDetail
+			}
 			if it.ServerToolCallsKnown {
 				entry["server_tool_calls"] = it.ServerToolCalls
 			}
@@ -168,7 +180,10 @@ func SubmitSearchTaskTool(store *tasks.Store, svc *search.Service) (Tool, ToolHa
 		Name: "submit_search_task",
 		Description: "Submit a web_search or web_search_batch to run in the background, returning a " +
 			"task_id immediately. Poll get_search_task_result for the outcome. Use for long " +
-			"searches you do not want to block on.",
+			"searches you do not want to block on. Tasks live in process memory only: the store " +
+			"holds at most 256 tasks (the oldest finished tasks are evicted first; when all 256 " +
+			"are still running, the oldest running task is cancelled and dropped), and no task " +
+			"survives a server restart.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{

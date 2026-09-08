@@ -8,10 +8,19 @@ import (
 	"time"
 
 	"github.com/AoManoh/openscry/internal/fetch"
+	"github.com/AoManoh/openscry/internal/grok"
 	"github.com/AoManoh/openscry/internal/mapper"
 	"github.com/AoManoh/openscry/internal/planner"
 	"github.com/AoManoh/openscry/internal/search"
 )
+
+// formatCompletion 渲染 "<state> (<detail>)"；detail 为空时只输出状态，避免出现空括号。
+func formatCompletion(state grok.CompletionState, detail string) string {
+	if detail == "" {
+		return string(state)
+	}
+	return fmt.Sprintf("%s (%s)", state, detail)
+}
 
 // WebSearchTool builds the `web_search` tool definition and a handler bound
 // to the given search service. This is the single tool exposed in the stage
@@ -91,6 +100,11 @@ func WebSearchTool(svc *search.Service) (Tool, ToolHandler) {
 		if res.Model != "" {
 			text += "\n\n> model: " + res.Model
 		}
+		// 流未确认完整时单独一行披露状态与原因；complete 时不输出，避免改变正常结果的形态。
+		// 正文里已经以 > warning: 提示过，这里再给出机器可读的一行，便于 agent 按状态分支。
+		if res.CompletionState != grok.StateComplete {
+			text += "\n> completion: " + formatCompletion(res.CompletionState, res.CompletionDetail)
+		}
 		// 服务端工具调用次数与耗时：让 agent 与评测无需旁路手段即可判断检索是否发生、花了多久
 		if res.ServerToolCallsKnown {
 			text += fmt.Sprintf("\n> tools: %d server-side calls", res.ServerToolCalls)
@@ -142,16 +156,17 @@ func WebFetchTool(svc *fetch.Service) (Tool, ToolHandler) {
 
 	handler := func(ctx context.Context, args map[string]any) (*ToolCallResult, error) {
 		rawURL, _ := args["url"].(string)
+		// timeout 作为显式预算参数交给服务层，而不是包装成请求上下文的截止时间：服务层
+		// 要能区分"调用方要求的预算"与"传输层请求上限"，前者才应替代默认档位。
+		var budget time.Duration
 		if to, _ := args["timeout"].(string); strings.TrimSpace(to) != "" {
 			d, err := time.ParseDuration(strings.TrimSpace(to))
 			if err != nil {
 				return nil, fmt.Errorf("web_fetch: invalid timeout %q (want a Go duration like 30s): %w", to, err)
 			}
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, d)
-			defer cancel()
+			budget = d
 		}
-		res, err := svc.Fetch(ctx, rawURL)
+		res, err := svc.FetchWithTimeout(ctx, rawURL, budget)
 		if err != nil {
 			return nil, err
 		}
@@ -214,14 +229,14 @@ func WebMapTool(svc *mapper.Service) (Tool, ToolHandler) {
 
 	handler := func(ctx context.Context, args map[string]any) (*ToolCallResult, error) {
 		rawURL, _ := args["url"].(string)
+		// timeout 作为显式预算参数交给服务层（见 web_fetch 的说明）。
+		var budget time.Duration
 		if to, _ := args["timeout"].(string); strings.TrimSpace(to) != "" {
 			d, err := time.ParseDuration(strings.TrimSpace(to))
 			if err != nil {
 				return nil, fmt.Errorf("web_map: invalid timeout %q (want a Go duration like 60s): %w", to, err)
 			}
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, d)
-			defer cancel()
+			budget = d
 		}
 
 		req := mapper.Request{
@@ -230,6 +245,7 @@ func WebMapTool(svc *mapper.Service) (Tool, ToolHandler) {
 			MaxBreadth:   parseIntArg(args, "max_breadth", 20),
 			Limit:        parseIntArg(args, "limit", 50),
 			Instructions: stringArg(args, "instructions"),
+			Timeout:      budget,
 		}
 
 		res, err := svc.Map(ctx, req)
@@ -315,18 +331,18 @@ func ResearchPlanTool(svc *planner.Service) (Tool, ToolHandler) {
 
 	handler := func(ctx context.Context, args map[string]any) (*ToolCallResult, error) {
 		question, _ := args["question"].(string)
+		// timeout 作为显式预算参数交给服务层（见 web_fetch 的说明）。
+		var budget time.Duration
 		if to, _ := args["timeout"].(string); strings.TrimSpace(to) != "" {
 			d, err := time.ParseDuration(strings.TrimSpace(to))
 			if err != nil {
 				return nil, fmt.Errorf("research_plan: invalid timeout %q: %w", to, err)
 			}
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, d)
-			defer cancel()
+			budget = d
 		}
 
 		started := time.Now()
-		plan, err := svc.Plan(ctx, question)
+		plan, err := svc.PlanWithTimeout(ctx, question, budget)
 		if err != nil {
 			return nil, err
 		}

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AoManoh/openscry/internal/grok"
 	"github.com/AoManoh/openscry/internal/sources"
 )
 
@@ -34,6 +35,9 @@ type BatchItem struct {
 	ServerToolCallsKnown bool
 	Elapsed              time.Duration
 	ExtraSources         *ExtraSourcesReport
+	// 与 Result 相同的完整性字段；只在 Status 为 "ok" 时有值，error / skipped 项没有响应可判定。
+	CompletionState  grok.CompletionState
+	CompletionDetail string
 }
 
 // BatchOptions are applied to every sub-query in a batch. Per-query platform
@@ -44,6 +48,9 @@ type BatchOptions struct {
 	Model        string
 	ExtraSources int
 	Concurrency  int // max concurrent sub-queries; <= 0 uses the default
+	// Timeout 是每个子查询各自的显式预算（语义同 Request.Timeout），0 表示使用搜索档位。
+	// 它按子查询而不是按整个批次计量：批次内的子查询并发执行，逐条预算才与单次搜索一致。
+	Timeout time.Duration
 }
 
 // BatchSearch runs many independent queries concurrently with bounded
@@ -88,6 +95,7 @@ func (s *Service) BatchSearch(ctx context.Context, queries []string, opt BatchOp
 				Platform:     opt.Platform,
 				Model:        opt.Model,
 				ExtraSources: opt.ExtraSources,
+				Timeout:      opt.Timeout,
 			})
 			if err != nil {
 				items[idx].Status = "error"
@@ -102,6 +110,8 @@ func (s *Service) BatchSearch(ctx context.Context, queries []string, opt BatchOp
 			items[idx].ServerToolCallsKnown = res.ServerToolCallsKnown
 			items[idx].Elapsed = res.Elapsed
 			items[idx].ExtraSources = res.ExtraSources
+			items[idx].CompletionState = res.CompletionState
+			items[idx].CompletionDetail = res.CompletionDetail
 		}(i, query)
 	}
 	wg.Wait()

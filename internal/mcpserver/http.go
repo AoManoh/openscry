@@ -17,8 +17,12 @@ const maxHTTPBodyBytes = 4 << 20 // 4 MiB
 
 // defaultHTTPRequestTimeout bounds one /mcp request end-to-end. It is generous
 // because a web_search_batch can legitimately run several sequential waves of
-// upstream searches; the per-operation timeouts in the resilience layer bound
-// each underlying call.
+// upstream searches.
+//
+// 它是传输层上限，不是操作预算：底层的 search / fetch / map / plan 服务总会按自己的
+// 预算（调用方显式 timeout 参数，否则该操作的档位）建立操作上下文，本上限只在预算之外
+// 兜底（context 自动保留更早的截止时间）。因此这里的 10 分钟不会替代 web_fetch 的 30s
+// 或 GROK_REQUEST_TIMEOUT 等默认预算，stdio 与 HTTP 两种传输下同一工具的超时行为一致。
 const defaultHTTPRequestTimeout = 10 * time.Minute
 
 // HTTPOptions configures the HTTP JSON-RPC transport.
@@ -130,8 +134,11 @@ func (s *Server) httpMux(opt HTTPOptions) (http.Handler, error) {
 // channel. Acquisition is non-blocking (try-acquire): when the limiter is full
 // the request is rejected immediately with 503 + Retry-After rather than
 // queued, because an HTTP client can retry on its own — this is the
-// transport-appropriate backpressure, distinct from stdio's never-drop
-// synchronous fallback. A nil semaphore disables admission control.
+// transport-appropriate backpressure. The stdio engine differs: a tools/call
+// that finds the request queue full waits up to QueueWaitTimeout
+// (GROK_QUEUE_WAIT_TIMEOUT) for a slot and is then rejected with an
+// isError=true tool result, never executed on the receive loop. A nil
+// semaphore disables admission control.
 func (s *Server) admitInFlight(sem chan struct{}, next http.Handler) http.Handler {
 	if sem == nil {
 		return next
@@ -163,6 +170,8 @@ func (s *Server) mcpPostHandler(reqTimeout time.Duration) http.Handler {
 			return
 		}
 
+		// 请求级上限只做兜底：工具的实际预算由服务层按显式参数或操作档位另行建立，
+		// 见 defaultHTTPRequestTimeout 的说明。
 		ctx := r.Context()
 		if reqTimeout > 0 {
 			var cancel context.CancelFunc

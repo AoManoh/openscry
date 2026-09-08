@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/AoManoh/openscry/internal/resilience"
 )
@@ -61,6 +62,10 @@ type Request struct {
 	MaxBreadth   int    // maximum links to follow per page (default 20)
 	Limit        int    // total URL cap (default 50)
 	Instructions string // optional natural-language filter for the crawler
+	// Timeout 是调用方的显式预算（CLI --timeout / MCP timeout 参数），0 表示使用 OpMap
+	// 档位。预算以参数传递而不是由调用方给上下文设截止时间，是为了让服务层能区分
+	// "调用方要求的预算"与"传输层的请求上限"：后者只应收紧预算，不应替代默认预算。
+	Timeout time.Duration
 }
 
 func (r Request) normalized() Request {
@@ -105,12 +110,15 @@ func (s *Service) Map(ctx context.Context, req Request) (*Result, error) {
 		return nil, fmt.Errorf("mapper: invalid url %q (need an absolute http/https URL)", target)
 	}
 
-	// Budget: apply OpMap timeout when caller has no deadline.
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.profiles.For(resilience.OpMap))
-		defer cancel()
+	// 预算：显式预算优先，否则用 OpMap 档位；两者之一总会作为操作上下文的截止时间生效，
+	// 父上下文更早的截止时间由 context 自动保留。不再因父上下文已有截止时间而跳过档位，
+	// 否则 MCP HTTP 传输的请求上限会冒充 map 预算，同一次 map 在 stdio 与 HTTP 下行为不一致。
+	budget := req.Timeout
+	if budget <= 0 {
+		budget = s.profiles.For(resilience.OpMap)
 	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 
 	req = req.normalized()
 
