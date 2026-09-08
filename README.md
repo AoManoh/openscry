@@ -84,19 +84,19 @@ export GROK_DEBUG=false               # true 时 openscry mcp 输出 Debug 级 s
 ./openscry mcp --tools all              # 暴露全部 10 个工具（含异步任务族）
 ./openscry mcp --http 127.0.0.1:8080    # 走 HTTP JSON-RPC（需 GROK_HTTP_API_KEY）
 
-./openscry version   # 输出 build 信息中的版本：发布 tag（v0.2.1）、本地构建伪版本或 devel
+./openscry version   # 输出 build 信息中的版本：发布 tag（v0.2.2）、本地构建伪版本或 devel
 ```
 
 ## 在 IDE中配置 MCP
 
-在 `mcp_config.json` 的 `mcpServers` 中加入 openscry。**推荐在线方式**——无需本地构建，`go run` 会自动从 GitHub 拉取源码并编译；固定到发布 tag（如 `@v0.2.1`）而不是 `@main`，升级时改 tag 后重启会话即可（版本记录见 [CHANGELOG.md](CHANGELOG.md)）：
+在 `mcp_config.json` 的 `mcpServers` 中加入 openscry。**推荐在线方式**——无需本地构建，`go run` 会自动从 GitHub 拉取源码并编译；固定到发布 tag（如 `@v0.2.2`）而不是 `@main`，升级时改 tag 后重启会话即可（版本记录见 [CHANGELOG.md](CHANGELOG.md)）：
 
 ```json
 {
   "mcpServers": {
     "openscry-mcp": {
       "command": "go",
-      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@v0.2.1", "mcp", "--tools", "all"],
+      "args": ["run", "github.com/AoManoh/openscry/cmd/openscry@v0.2.2", "mcp", "--tools", "all"],
       "env": {
         "GROK_API_URL": "https://你的-host/v1",
         "GROK_API_KEY": "你的-key",

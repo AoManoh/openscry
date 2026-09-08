@@ -2,9 +2,9 @@
 
 本文件面向 openscry 的使用者，记录每个发布版本可感知的变化。版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)，日期为 tag 推送日。
 
-## [Unreleased]
+## [0.2.2] - 2026-09-08
 
-自 v0.2.1 以来尚未发版的变化。所有条目已逐项与当前源码核对；不改任何接口形态，已有配置无需重建，新增的配置项都有默认值。
+对 v0.2.1 做深度复核后修复的补丁版本。所有条目已逐项与源码核对；不改任何接口形态，已有配置无需重建，新增的配置项都有默认值。
 
 ### 修复
 
@@ -27,7 +27,11 @@
 
 ### 升级方法
 
-待发版。发版后本条目改为 `[X.Y.Z] - 日期`，升级命令与 MCP 配置中的 tag 以发版时的版本号为准。
+```bash
+go install github.com/AoManoh/openscry/cmd/openscry@v0.2.2
+```
+
+MCP 配置把 `@v0.2.1` 改为 `@v0.2.2` 后重启会话；`openscry version` 应输出 `openscry v0.2.2`，`get_config_info` 的输出应出现 `queue_wait_timeout` 字段。
 
 ## [0.2.1] - 2026-09-04
 
@@ -86,6 +90,6 @@ go install github.com/AoManoh/openscry/cmd/openscry@v0.2.0
 
 MCP 配置以 `go run` 在线启动的，把 `args` 中的 `github.com/AoManoh/openscry/cmd/openscry@main`（或 `@v0.2.0-sN`）改为 `@v0.2.0` 后重启会话。升级后用 `openscry version` 确认输出 `openscry v0.2.0`。
 
-[Unreleased]: https://github.com/AoManoh/openscry/compare/v0.2.1...HEAD
+[0.2.2]: https://github.com/AoManoh/openscry/releases/tag/v0.2.2
 [0.2.1]: https://github.com/AoManoh/openscry/releases/tag/v0.2.1
 [0.2.0]: https://github.com/AoManoh/openscry/releases/tag/v0.2.0
